@@ -159,6 +159,10 @@ int main() {
         ImGui::SliderFloat("Speed of Boids", &speedBoids, 1.0f, 10.0f);
         ImGui::SliderFloat("Boid Size", &boidSize, 0.1f, 1.0f);
         ImGui::Checkbox("Day/Night Mode", &dayMode);
+        ImGui::SliderFloat("Alignment Weight", &alignmentWeight, 0.0f, 1.0f); // Ajouter un slider pour le poids d'alignement
+        ImGui::SliderFloat("Cohesion Weight", &cohesionWeight, 0.0f, 1.0f); // Ajouter un slider pour le poids de cohésion
+        ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f); // Ajouter un slider pour la distance de séparation
+
         ImGui::End();
 
         // Update number of boids
