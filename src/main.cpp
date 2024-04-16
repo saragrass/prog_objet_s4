@@ -53,7 +53,7 @@ int main() {
     ctx.maximize_window();
 
     // Load shaders using Shader class
-    p6::Shader shader = p6::load_shader("shaders/firefly.vs.glsl", "shaders/firefly.fs.glsl");
+    p6::Shader shader = p6::load_shader("shaders/3D.vs.glsl", "shaders/normals.fs.glsl");
 
     // Enable depth test
     glEnable(GL_DEPTH_TEST);
