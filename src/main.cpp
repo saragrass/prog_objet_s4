@@ -25,6 +25,8 @@ struct Boid {
 struct Model {
     GLuint vao; // Vertex Array Object
     GLuint vbo; // Vertex Buffer Object
+    GLuint vboNormals; // Vertex Buffer Object for normals
+    GLuint vboTexCoords; // Vertex Buffer Object for texture coordinates
     int numVertices; // Number of vertices
 };
 
@@ -41,7 +43,7 @@ float distanceMinToCamera = 0.2f;
 float avoidanceWeight = 0.2f;
 
 // Rayon du dôme
-float domeRadius = 1.5f;
+float domeRadius = 1.0f;
 
 // Fonction pour obtenir la couleur en fonction du mode jour/nuit et du type de boid
 glm::vec3 getBoidColor(bool dayMode, bool isFemale) {
@@ -91,9 +93,10 @@ Model loadModel(const char* objPath) {
             unsigned int normalIndex1, normalIndex2, normalIndex3;
             unsigned int texCoordIndex1, texCoordIndex2, texCoordIndex3;
             char slash;
-            iss >> vertexIndex1 >> slash >> texCoordIndex1 >> slash >> normalIndex1
-                >> vertexIndex2 >> slash >> texCoordIndex2 >> slash >> normalIndex2
-                >> vertexIndex3 >> slash >> texCoordIndex3 >> slash >> normalIndex3;
+            iss >> vertexIndex1 >> slash >> normalIndex1 >> slash >> texCoordIndex1
+                >> vertexIndex2 >> slash >> normalIndex2 >> slash >> texCoordIndex2
+                >> vertexIndex3 >> slash >> normalIndex3 >> slash >> texCoordIndex3;
+
             // OBJ indices start from 1, so we need to decrement them to match C++ indexing
             indices.push_back(vertexIndex1 - 1);
             indices.push_back(vertexIndex2 - 1);
@@ -111,9 +114,29 @@ Model loadModel(const char* objPath) {
     glBindBuffer(GL_ARRAY_BUFFER, model.vbo);
     glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(glm::vec3), vertices.data(), GL_STATIC_DRAW);
 
-    // Set vertex attribute pointers
+    // Set vertex attribute pointers for positions
     glVertexAttribPointer(VERTEX_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0); // Position attribute (aPos)
     glEnableVertexAttribArray(VERTEX_ATTR_POSITION);
+
+    // Generate and bind VBO for normals
+    GLuint vboNormals;
+    glGenBuffers(1, &vboNormals);
+    glBindBuffer(GL_ARRAY_BUFFER, vboNormals);
+    glBufferData(GL_ARRAY_BUFFER, normals.size() * sizeof(glm::vec3), normals.data(), GL_STATIC_DRAW);
+
+    // Set vertex attribute pointers for normals
+    glVertexAttribPointer(VERTEX_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0); // Normal attribute (aNormal)
+    glEnableVertexAttribArray(VERTEX_ATTR_NORMAL);
+
+    // Generate and bind VBO for texture coordinates
+    GLuint vboTexCoords;
+    glGenBuffers(1, &vboTexCoords);
+    glBindBuffer(GL_ARRAY_BUFFER, vboTexCoords);
+    glBufferData(GL_ARRAY_BUFFER, texCoords.size() * sizeof(glm::vec2), texCoords.data(), GL_STATIC_DRAW);
+
+    // Set vertex attribute pointers for texture coordinates
+    glVertexAttribPointer(VERTEX_ATTR_TEXCOORDS, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), (void*)0); // Texture coordinates attribute (aTexCoord)
+    glEnableVertexAttribArray(VERTEX_ATTR_TEXCOORDS);
 
     // Generate and bind EBO (Element Buffer Object)
     GLuint ebo;
@@ -138,13 +161,13 @@ int main() {
     glEnable(GL_DEPTH_TEST);
 
     // Variables de la caméra
-    glm::vec3 cameraPosition = glm::vec3(0.0f, 0.0f, 3.0f);
+    glm::vec3 cameraPosition = glm::vec3(0.0f, 0.0f, 6.0f);
     float cameraSpeed = 1.5f;
 
     // Declare variables for ImGui sliders
-    int numBoids = 100;
+    int numBoids = 25;
     float speedBoids = 2.5f;
-    float boidSize = 0.1f;
+    float boidSize = 0.05f;
 
     // Create boids
     std::vector<Boid> boids(numBoids);
@@ -163,8 +186,8 @@ int main() {
     }
 
     // Load the OBJ model
-    Model model = loadModel("assets/models/projet-sara-creation-3d-only-ghost-3.obj");
-    if (model.numVertices == 0) {
+    Model ghostModel = loadModel("assets/models/projet-sara-creation-3d-only-ghost-3.obj");
+    if (ghostModel.numVertices == 0) {
         std::cerr << "Failed to load model" << std::endl;
         return -1;
     }
@@ -197,69 +220,87 @@ int main() {
     glBindVertexArray(0);
 
     // Boucle de mise à jour des boids
-    ctx.update = [&]() {
-        glm::vec3 backgroundColor = dayMode ? glm::vec3{0.06, 0.03, 0.5} : glm::vec3{0.0, 0.0, 0.1}; // Calculer la couleur du fond en fonction du mode jour ou nuit
-        backgroundColor = glm::mix(backgroundColor, glm::vec3{0.8, 0.9, 1.0}, transition); // Appliquer la transition si nécessaire
-        ctx.background(p6::Color{backgroundColor.r, backgroundColor.g, backgroundColor.b}); // Convertir la couleur en p6::Color
+ctx.update = [&]() {
+    glm::vec3 backgroundColor = dayMode ? glm::vec3{0.06, 0.03, 0.5} : glm::vec3{0.0, 0.0, 0.1}; 
+    backgroundColor = glm::mix(backgroundColor, glm::vec3{0.8, 0.9, 1.0}, transition); 
+    ctx.background(p6::Color{backgroundColor.r, backgroundColor.g, backgroundColor.b}); 
 
-        // Get the current time
-        float currentTime = ctx.time();
+    float currentTime = ctx.time();
+    float deltaTime = ctx.delta_time();
 
-        // Compute time difference
-        float deltaTime = ctx.delta_time();
+    if (ctx.key_is_pressed(GLFW_KEY_UP)) {
+        cameraPosition -= cameraSpeed * glm::vec3(0.0f, 0.0f, 1.0f) * deltaTime;
+    }
+    if (ctx.key_is_pressed(GLFW_KEY_DOWN)) {
+        cameraPosition += cameraSpeed * glm::vec3(0.0f, 0.0f, 1.0f) * deltaTime;
+    }
+    if (ctx.key_is_pressed(GLFW_KEY_LEFT)) {
+        cameraPosition -= cameraSpeed * glm::vec3(1.0f, 0.0f, 0.0f) * deltaTime;
+    }
+    if (ctx.key_is_pressed(GLFW_KEY_RIGHT)) {
+        cameraPosition += cameraSpeed * glm::vec3(1.0f, 0.0f, 0.0f) * deltaTime;
+    }
+    if (ctx.key_is_pressed(GLFW_KEY_W)) {
+        cameraPosition += cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * deltaTime;
+    }
+    if (ctx.key_is_pressed(GLFW_KEY_S)) {
+        cameraPosition -= cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * deltaTime;
+    }
 
-        // Handle camera movement
-        if (ctx.key_is_pressed(GLFW_KEY_UP)) {
-            cameraPosition -= cameraSpeed * glm::vec3(0.0f, 0.0f, 1.0f) * deltaTime;
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glm::mat4 ProjMatrix = glm::perspective(glm::radians(70.f), 1280.f / 720.f, 0.1f, 100.f);
+    glm::mat4 MVMatrix = glm::lookAt(cameraPosition, cameraPosition + glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 NormalMatrix = glm::transpose(glm::inverse(MVMatrix));
+
+    shader.use(); 
+    shader.set("uMVPMatrix", ProjMatrix * MVMatrix);
+    shader.set("uMVMatrix", MVMatrix);
+    shader.set("uNormalMatrix", NormalMatrix);
+
+    ImGui::Begin("Settings");
+    ImGui::SliderInt("Number of Boids", &numBoids, 1, 100);
+    ImGui::SliderFloat("Speed of Boids", &speedBoids, 1.0f, 10.0f);
+    ImGui::SliderFloat("Boid Size", &boidSize, 0.01f, 0.1f);
+    ImGui::Checkbox("Day/Night Mode", &dayMode);
+    ImGui::SliderFloat("Alignment Weight", &alignmentWeight, 0.0f, 1.0f); 
+    ImGui::SliderFloat("Cohesion Weight", &cohesionWeight, 0.0f, 1.0f); 
+    ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f); 
+
+    ImGui::End();
+
+    for (int i = 0; i < numBoids; ++i) {
+        // Rotation autour de l'axe x
+        float angleDegreesX = -45.0f;
+        float angleRadiansX = glm::radians(angleDegreesX);
+        glm::quat rotationQuatX = glm::angleAxis(angleRadiansX, glm::vec3(1.0f, 0.0f, 0.0f));
+        glm::mat4 rotationMatrixX = glm::mat4_cast(rotationQuatX);
+
+        // Rotation autour de l'axe y
+        float angleDegreesY = -75.0f;
+        float angleRadiansY = glm::radians(angleDegreesY);
+        glm::quat rotationQuatY = glm::angleAxis(angleRadiansY, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 rotationMatrixY = glm::mat4_cast(rotationQuatY);
+
+        // Concaténation des deux rotations
+        glm::mat4 totalRotationMatrix = rotationMatrixX * rotationMatrixY;
+
+        // Appliquer la rotation à la matrice du modèle
+        glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * totalRotationMatrix * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
+        
+        // Vérifier si c'est la nuit pour dessiner les fantômes
+        if (!dayMode) {
+            glm::vec3 boidColor = getBoidColor(dayMode, boids[i].isFemale);
+            shader.set("uColor", boidColor);
+            shader.set("uMVPMatrix", ProjMatrix * MVMatrix * boidModelMatrix);
+            shader.set("uMVMatrix", MVMatrix * boidModelMatrix);
+            shader.set("uNormalMatrix", glm::transpose(glm::inverse(MVMatrix * boidModelMatrix)));
+
+            glBindVertexArray(ghostModel.vao);
+            glDrawElements(GL_TRIANGLES, ghostModel.numVertices, GL_UNSIGNED_INT, 0);
         }
-        if (ctx.key_is_pressed(GLFW_KEY_DOWN)) {
-            cameraPosition += cameraSpeed * glm::vec3(0.0f, 0.0f, 1.0f) * deltaTime;
-        }
-        if (ctx.key_is_pressed(GLFW_KEY_LEFT)) {
-            cameraPosition -= cameraSpeed * glm::vec3(1.0f, 0.0f, 0.0f) * deltaTime;
-        }
-        if (ctx.key_is_pressed(GLFW_KEY_RIGHT)) {
-            cameraPosition += cameraSpeed * glm::vec3(1.0f, 0.0f, 0.0f) * deltaTime;
-        }
-        if (ctx.key_is_pressed(GLFW_KEY_W)) {
-            cameraPosition += cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * deltaTime;
-        }
-        if (ctx.key_is_pressed(GLFW_KEY_S)) {
-            cameraPosition -= cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * deltaTime;
-        }
-
-        // Clear buffers
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // Compute matrices
-        glm::mat4 ProjMatrix = glm::perspective(glm::radians(70.f), 1280.f / 720.f, 0.1f, 100.f);
-        glm::mat4 MVMatrix = glm::lookAt(cameraPosition, cameraPosition + glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::mat4 NormalMatrix = glm::transpose(glm::inverse(MVMatrix));
-
-        // Send matrices to the GPU
-        shader.use(); // Use the shader
-        shader.set("uMVPMatrix", ProjMatrix * MVMatrix);
-        shader.set("uMVMatrix", MVMatrix);
-        shader.set("uNormalMatrix", NormalMatrix);
-
-        // Draw the model
-        glBindVertexArray(model.vao);
-        glDrawArrays(GL_TRIANGLES, 0, model.numVertices);
-        glBindVertexArray(0);
-
-        // Handle ImGui
-        ImGui::Begin("Settings");
-        ImGui::SliderInt("Number of Boids", &numBoids, 0, 500);
-        ImGui::SliderFloat("Speed of Boids", &speedBoids, 1.0f, 10.0f);
-        ImGui::SliderFloat("Boid Size", &boidSize, 0.1f, 1.0f);
-        ImGui::Checkbox("Day/Night Mode", &dayMode);
-        ImGui::SliderFloat("Alignment Weight", &alignmentWeight, 0.0f, 1.0f); // Ajouter un slider pour le poids d'alignement
-        ImGui::SliderFloat("Cohesion Weight", &cohesionWeight, 0.0f, 1.0f); // Ajouter un slider pour le poids de cohésion
-        ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f); // Ajouter un slider pour la distance de séparation
-
-        ImGui::End();
-
-        // Update number of boids
+    }
+    // Update number of boids
         if (numBoids > boids.size()) {
             int numFemalesToAdd = numBoids * 0.2 - (boids.size() - numFemales);
             for (int i = 0; i < numFemalesToAdd; ++i) {
@@ -341,9 +382,13 @@ int main() {
             // Keep boids within the dome bounds
             float distanceToCenter = glm::length(boids[i].position);
             if (distanceToCenter > domeRadius) {
-                boids[i].position = glm::normalize(boids[i].position);
-                boids[i].velocity = glm::reflect(boids[i].velocity, glm::normalize(boids[i].position));
-            }
+                // Calculate the direction vector from the boid to the center of the sphere
+                glm::vec3 centerDirection = glm::normalize(glm::vec3(0.0f) - boids[i].position);
+
+                // Adjust the velocity of the boid to move towards the center of the sphere
+                boids[i].position += centerDirection * (distanceToCenter - domeRadius);
+
+            }   
 
             // Calculate boid's model matrix
             glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
