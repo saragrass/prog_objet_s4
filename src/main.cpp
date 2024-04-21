@@ -4,6 +4,11 @@
 #include "p6/p6.h"
 #include <iostream>
 #include <random>
+#include <filesystem> // pour std::filesystem::path
+#include <stdexcept>
+#include <fstream>
+#include <sstream>
+#include <map>
 #include "imgui.h"
 #include "sphere.h"
 #include "glm/glm.hpp"
@@ -28,6 +33,19 @@ struct Model {
     GLuint vboNormals; // Vertex Buffer Object for normals
     GLuint vboTexCoords; // Vertex Buffer Object for texture coordinates
     int numVertices; // Number of vertices
+    std::map<std::string, GLuint> materialTextureIDs; // Texture IDs per material
+};
+
+struct Surveyor {
+    glm::vec3 position;
+    float speed;
+};
+
+struct TextureInfo {
+    std::string path;
+    float scaleX;
+    float scaleY;
+    float scaleZ;
 };
 
 float separationDistance = 0.1f; // Distance minimale de séparation des boids
@@ -43,7 +61,7 @@ float distanceMinToCamera = 0.2f;
 float avoidanceWeight = 0.2f;
 
 // Rayon du dôme
-float domeRadius = 1.0f;
+float domeRadius = 2.0f;
 
 // Fonction pour obtenir la couleur en fonction du mode jour/nuit et du type de boid
 glm::vec3 getBoidColor(bool dayMode, bool isFemale) {
@@ -56,7 +74,7 @@ glm::vec3 getBoidColor(bool dayMode, bool isFemale) {
     }
 }
 
-Model loadModel(const char* objPath) {
+Model loadModel(const char* objPath, const char* mtlPath) {
     Model model;
 
     // Open the OBJ file
@@ -64,6 +82,72 @@ Model loadModel(const char* objPath) {
     if (!file.is_open()) {
         std::cerr << "Error: Could not open file " << objPath << std::endl;
         return model;
+    }
+
+    // Open the MTL file
+    std::ifstream mtlFile(mtlPath);
+    if (!mtlFile.is_open()) {
+        std::cerr << "Error: Could not open file " << mtlPath << std::endl;
+        return model;
+    }
+
+    std::map<std::string, std::pair<std::string, glm::vec3>> materialTexturePaths;
+
+    // Process the MTL file
+    std::string lineTexture;
+    std::string currentMaterial;
+    while (std::getline(mtlFile, lineTexture)) {
+        std::istringstream iss(lineTexture);
+        std::string type;
+        iss >> type;
+        if (type == "newmtl") {
+            iss >> currentMaterial;
+        } else if (type == "map_Kd") {
+            std::string texturePath;
+            iss >> texturePath;
+            // Check if there are scaling parameters
+            glm::vec3 scaleParameters(1.0f);
+            if (texturePath == "-s") {
+                iss >> scaleParameters.x >> scaleParameters.y >> scaleParameters.z;
+                // Read the actual texture path
+                iss >> texturePath;
+            }
+            // Adjust texture path to match the directory structure
+            texturePath = "img/" + texturePath;
+            // Store the texture path along with its scaling parameters
+            materialTexturePaths[currentMaterial] = std::make_pair(texturePath, scaleParameters);
+        }
+    }
+
+    // Load textures and associate them with materials
+    for (const auto& [material, textureInfo] : materialTexturePaths) {
+        // Log the texture path before loading
+        std::cout << "Loading texture for material: " << material << ", path: " << textureInfo.first << std::endl;
+
+        // Load texture using p6::load_image or any other method you prefer
+        // For example:
+        p6::Image textureImage = p6::load_image(textureInfo.first.c_str(), true);
+
+        // Concatenate scaling parameters if present
+        std::string scaleParams = std::to_string(textureInfo.second.x) + " " + std::to_string(textureInfo.second.y) + " " + std::to_string(textureInfo.second.z);
+        std::string texturePathWithScale = textureInfo.first + " -s " + scaleParams;
+
+        // Generate OpenGL texture and bind it
+        GLuint textureID;
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+
+        // No need to upload image data explicitly, handled internally by p6::Image
+
+        // Set texture parameters
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        // Associate texture with material
+        // You may need to modify your Model struct to store texture IDs per material
+        model.materialTextureIDs[material] = textureID;
     }
 
     std::vector<glm::vec3> vertices;
@@ -186,11 +270,19 @@ int main() {
     }
 
     // Load the OBJ model
-    Model ghostModel = loadModel("assets/models/projet-sara-creation-3d-only-ghost-3.obj");
+    Model ghostModel = loadModel("assets/models/projet-sara-creation-3d-only-ghost-3.obj","assets/models/projet-sara-creation-3d-only-ghost-3.mtl");
     if (ghostModel.numVertices == 0) {
         std::cerr << "Failed to load model" << std::endl;
         return -1;
     }
+
+    // Load the OBJ model
+    Model surveyorModel = loadModel("assets/models/projet-sara-creation-3d-only-box-1.obj","assets/models/projet-sara-creation-3d-only-box-1.mtl");
+    if (surveyorModel.numVertices == 0) {
+        std::cerr << "Failed to load model" << std::endl;
+        return -1;
+    }
+
     // Create VAO and VBO for boid sphere
     Sphere boidSphere(boidSize, 16, 8);
     GLuint boidVBO, boidVAO;
@@ -219,6 +311,11 @@ int main() {
     // Unbind VAO
     glBindVertexArray(0);
 
+    // Create surveyor
+    Surveyor surveyor;
+    surveyor.position = glm::vec3{1.0f, -3.0f, 0.0f};
+    surveyor.speed = 0.5f;
+
     // Boucle de mise à jour des boids
 ctx.update = [&]() {
     glm::vec3 backgroundColor = dayMode ? glm::vec3{0.06, 0.03, 0.5} : glm::vec3{0.0, 0.0, 0.1}; 
@@ -228,24 +325,25 @@ ctx.update = [&]() {
     float currentTime = ctx.time();
     float deltaTime = ctx.delta_time();
 
-    if (ctx.key_is_pressed(GLFW_KEY_UP)) {
-        cameraPosition -= cameraSpeed * glm::vec3(0.0f, 0.0f, 1.0f) * deltaTime;
-    }
-    if (ctx.key_is_pressed(GLFW_KEY_DOWN)) {
-        cameraPosition += cameraSpeed * glm::vec3(0.0f, 0.0f, 1.0f) * deltaTime;
-    }
-    if (ctx.key_is_pressed(GLFW_KEY_LEFT)) {
-        cameraPosition -= cameraSpeed * glm::vec3(1.0f, 0.0f, 0.0f) * deltaTime;
-    }
-    if (ctx.key_is_pressed(GLFW_KEY_RIGHT)) {
-        cameraPosition += cameraSpeed * glm::vec3(1.0f, 0.0f, 0.0f) * deltaTime;
-    }
-    if (ctx.key_is_pressed(GLFW_KEY_W)) {
-        cameraPosition += cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * deltaTime;
-    }
-    if (ctx.key_is_pressed(GLFW_KEY_S)) {
-        cameraPosition -= cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * deltaTime;
-    }
+    // Handle input for moving the surveyor
+        if (ctx.key_is_pressed(GLFW_KEY_LEFT)) {
+            surveyor.position.x -= surveyor.speed * ctx.delta_time();
+        }
+        if (ctx.key_is_pressed(GLFW_KEY_RIGHT)) {
+            surveyor.position.x += surveyor.speed * ctx.delta_time();
+        }
+        if (ctx.key_is_pressed(GLFW_KEY_UP)) {
+            surveyor.position.y += surveyor.speed * ctx.delta_time();
+        }
+        if (ctx.key_is_pressed(GLFW_KEY_DOWN)) {
+            surveyor.position.y -= surveyor.speed * ctx.delta_time();
+        }
+        if (ctx.key_is_pressed(GLFW_KEY_A)) {
+            surveyor.position.z -= surveyor.speed * ctx.delta_time();
+        }
+        if (ctx.key_is_pressed(GLFW_KEY_Z)) {
+            surveyor.position.z += surveyor.speed * ctx.delta_time();
+        }
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -268,28 +366,46 @@ ctx.update = [&]() {
     ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f); 
 
     ImGui::End();
+    
+    // Rotation angle in degrees
+    float surveyorRotationAngleY = 100.0f;
+
+    // Convert rotation angle to radians
+    float surveyorRotationAngleYRadians = glm::radians(surveyorRotationAngleY);
+
+    // Apply rotation around the Y axis to the model matrix
+    glm::mat4 surveyorModelMatrix = glm::rotate(glm::translate(glm::mat4(1.0f), surveyor.position), surveyorRotationAngleYRadians, glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // Render surveyor
+    //glm::mat4 surveyorModelMatrix = glm::translate(glm::mat4(1.0f), surveyor.position);
+    shader.set("uModelMatrix", surveyorModelMatrix);
+    glm::vec3 surveyorColor = glm::vec3(1.0f, 1.0f, 1.0f); // White color for surveyor
+    shader.set("uColor", surveyorColor);
+    glBindVertexArray(surveyorModel.vao);
+    glDrawElements(GL_TRIANGLES, surveyorModel.numVertices, GL_UNSIGNED_INT, 0);
 
     for (int i = 0; i < numBoids; ++i) {
-        // Rotation autour de l'axe x
-        float angleDegreesX = -45.0f;
-        float angleRadiansX = glm::radians(angleDegreesX);
-        glm::quat rotationQuatX = glm::angleAxis(angleRadiansX, glm::vec3(1.0f, 0.0f, 0.0f));
-        glm::mat4 rotationMatrixX = glm::mat4_cast(rotationQuatX);
-
-        // Rotation autour de l'axe y
-        float angleDegreesY = -75.0f;
-        float angleRadiansY = glm::radians(angleDegreesY);
-        glm::quat rotationQuatY = glm::angleAxis(angleRadiansY, glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::mat4 rotationMatrixY = glm::mat4_cast(rotationQuatY);
-
-        // Concaténation des deux rotations
-        glm::mat4 totalRotationMatrix = rotationMatrixX * rotationMatrixY;
-
-        // Appliquer la rotation à la matrice du modèle
-        glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * totalRotationMatrix * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
-        
         // Vérifier si c'est la nuit pour dessiner les fantômes
         if (!dayMode) {
+            // Rotation autour de l'axe x
+            float angleDegreesX = -45.0f;
+            float angleRadiansX = glm::radians(angleDegreesX);
+            glm::quat rotationQuatX = glm::angleAxis(angleRadiansX, glm::vec3(1.0f, 0.0f, 0.0f));
+            glm::mat4 rotationMatrixX = glm::mat4_cast(rotationQuatX);
+
+            // Rotation autour de l'axe y
+            float angleDegreesY = -75.0f;
+            float angleRadiansY = glm::radians(angleDegreesY);
+            glm::quat rotationQuatY = glm::angleAxis(angleRadiansY, glm::vec3(0.0f, 1.0f, 0.0f));
+            glm::mat4 rotationMatrixY = glm::mat4_cast(rotationQuatY);
+
+            // Concaténation des deux rotations
+            glm::mat4 totalRotationMatrix = rotationMatrixX * rotationMatrixY;
+
+            // Appliquer la rotation à la matrice du modèle
+            glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * totalRotationMatrix * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
+            
+            shader.set("uModelMatrix", glm::mat4(1.0f));
             glm::vec3 boidColor = getBoidColor(dayMode, boids[i].isFemale);
             shader.set("uColor", boidColor);
             shader.set("uMVPMatrix", ProjMatrix * MVMatrix * boidModelMatrix);
@@ -374,7 +490,11 @@ ctx.update = [&]() {
             }
 
             // Normaliser la vitesse
-            boids[i].velocity = glm::normalize(boids[i].velocity) * speedBoids;
+    // Calculate direction to avoid the surveyor
+    glm::vec3 directionFromSurveyor = glm::normalize(boids[i].position - surveyor.position);
+
+    // Adjust boid velocity to move away from the surveyor
+    boids[i].velocity += directionFromSurveyor * avoidanceWeight * ctx.delta_time();
 
             // Appliquer simple intégration d'Euler pour mettre à jour la position du boid
             boids[i].position += boids[i].velocity * deltaTime;
@@ -382,12 +502,8 @@ ctx.update = [&]() {
             // Keep boids within the dome bounds
             float distanceToCenter = glm::length(boids[i].position);
             if (distanceToCenter > domeRadius) {
-                // Calculate the direction vector from the boid to the center of the sphere
-                glm::vec3 centerDirection = glm::normalize(glm::vec3(0.0f) - boids[i].position);
-
-                // Adjust the velocity of the boid to move towards the center of the sphere
-                boids[i].position += centerDirection * (distanceToCenter - domeRadius);
-
+        // Move the boid back inside the dome
+        boids[i].position = glm::normalize(boids[i].position) * domeRadius;
             }   
 
             // Calculate boid's model matrix
