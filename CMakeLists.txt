@@ -1,25 +1,24 @@
-# ---Choose CMake version---
 cmake_minimum_required(VERSION 3.20)
-
-# ---Choose project name---
 project(Simple-p6-Setup)
 
-# ---Declare source files---
+# ---Déclaration des fichiers sources---
 file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS src/*)
+
+# ---Ajout des fichiers sources au projet---
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 target_include_directories(${PROJECT_NAME} PRIVATE src)
 
-# ---Choose C++ version---
+# ---Choix de la version de C++---
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
 
-# ---Choose warning level---
+# ---Choix du niveau de warning---
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4)
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic -pedantic-errors -Wimplicit-fallthrough)
 endif()
 
-# ---Maybe enable warnings as errors---
+# ---Éventuellement, activer les warnings comme erreurs---
 set(WARNINGS_AS_ERRORS OFF CACHE BOOL "ON iff you want to treat warnings as errors")
 
 if(WARNINGS_AS_ERRORS)
@@ -30,7 +29,7 @@ if(WARNINGS_AS_ERRORS)
     endif()
 endif()
 
-# ---Setup Testing---
+# ---Configuration des tests---
 include(FetchContent)
 FetchContent_Declare(
     doctest
@@ -40,7 +39,8 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(doctest)
 target_link_libraries(${PROJECT_NAME} PRIVATE doctest::doctest)
 
-# ---Add p6 library---
+# ---Ajout de la bibliothèque p6---
+set(P6_RAW_OPENGL_MODE ON CACHE BOOL "")
 FetchContent_Declare(
     p6
     GIT_REPOSITORY https://github.com/julesfouchy/p6
@@ -48,3 +48,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(p6)
 target_link_libraries(${PROJECT_NAME} PRIVATE p6::p6)
+
+p6_copy_folder(${PROJECT_NAME} img)
+p6_copy_folder(${PROJECT_NAME} assets)
+p6_copy_folder(${PROJECT_NAME} shaders)
