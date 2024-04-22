@@ -1,4 +1,5 @@
-#include <cstdlib>
+#include <cstdlib> // pour std::rand() et std::srand() et autre
+#include <ctime>   // pour std::time()
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest/doctest.h"
 #include "p6/p6.h"
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <map>
+#include <cmath>
 #include "imgui.h"
 #include "sphere.h"
 #include "glm/glm.hpp"
@@ -21,10 +23,29 @@
 #define VERTEX_ATTR_NORMAL 1
 #define VERTEX_ATTR_TEXCOORDS 2
 
+float random(float min, float max) {
+    return min + static_cast <float> (rand()) / (static_cast<float>(RAND_MAX + 1) / (max - min));
+}
+
+float randomNormal(float mean, float stddev) {
+    const int numSamples = 12; // Nombre de valeurs aléatoires uniformes à additionner
+    float sum = 0.0f;
+    for (int i = 0; i < numSamples; ++i) {
+        sum += random(0.0f, 1.0f); // Ajouter des valeurs aléatoires uniformément distribuées
+    }
+    return mean + stddev * (sum - numSamples / 2.0f) / (numSamples / 2.0f); // Normalisation
+}
+
 struct Boid {
     glm::vec3 position;
     glm::vec3 velocity;
     bool isFemale;
+    float alignmentWeight;
+    float cohesionWeight;
+    float separationWeight;
+    float interactionRadius;
+    int markovState;
+    glm::vec3 color;
 };
 
 struct Model {
@@ -63,14 +84,38 @@ float avoidanceWeight = 0.2f;
 // Rayon du dôme
 float domeRadius = 2.0f;
 
+int countNeighbors(const Boid& boid, const std::vector<Boid>& boids, int numBoids) {
+    int count = 0;
+    for (int i = 0; i < numBoids; ++i) {
+        if (&boid != &boids[i]) {
+            float distance = glm::distance(boid.position, boids[i].position);
+            if (distance < boid.interactionRadius) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+void updateMarkovState(Boid& boid, const std::vector<Boid>& boids, int numBoids) {
+    int neighborCount = countNeighbors(boid, boids, numBoids);
+    
+    // Si le boid a plus de 5 voisins, changer son état de la chaîne de Markov
+    if (neighborCount > 5) {
+        boid.markovState = 1;
+    } else {
+        boid.markovState = 0;
+    }
+}
+
 // Fonction pour obtenir la couleur en fonction du mode jour/nuit et du type de boid
-glm::vec3 getBoidColor(bool dayMode, bool isFemale) {
-    if (dayMode) {
+glm::vec3 getBoidColor(bool markovState, bool isFemale) {
+    if (markovState) {
         // Couleur des boids pendant le jour
-        return isFemale ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.5f, 0.2f); // Vert pour les femelles, orange pour les autres
+        return isFemale ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(1.0f, 1.0f, 1.0f); // Vert pour les femelles, orange pour les autres
     } else {
         // Couleur des boids pendant la nuit
-        return isFemale ? glm::vec3(0.0f, 0.5f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.1f); // Vert foncé pour les femelles, bleu foncé pour les autres
+        return glm::vec3(1.0f, 1.0f, 1.0f);
     }
 }
 
@@ -234,9 +279,11 @@ Model loadModel(const char* objPath, const char* mtlPath) {
     return model;
 }
 
+
 int main() {
     auto ctx = p6::Context{{1280, 720, "fireflies around bignones"}};
     ctx.maximize_window();
+    std::srand(std::time(nullptr));
 
     // Load shaders using Shader class
     p6::Shader shader = p6::load_shader("shaders/3D.vs.glsl", "shaders/normals.fs.glsl");
@@ -255,18 +302,32 @@ int main() {
 
     // Create boids
     std::vector<Boid> boids(numBoids);
-    int numFemales = numBoids * 0.2; // 20% des boids seront des femelles
     for (int i = 0; i < numBoids; ++i) {
-        boids[i].position = glm::vec3(glm::linearRand(-1.5f, 1.5f),
-                                      glm::linearRand(-1.5f, 1.5f),
-                                      glm::linearRand(-1.5f, 1.5f));
+        // Position aléatoire des boids dans la sphère
+        float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
+        float phi = random(0.0f, static_cast<float>(M_PI));
+        float r = boidSize * cbrt(random(0.0f, 1.0f));
+        float x = r * sin(phi) * cos(theta);
+        float y = r * sin(phi) * sin(theta);
+        float z = r * cos(phi);
+        boids[i].position = glm::vec3(x, y, z);
+
+        // Vitesse aléatoire des boids dans une certaine plage
         boids[i].velocity = glm::sphericalRand(speedBoids);
+        
         // Définir aléatoirement si le boid est une femelle
-        if (i < numFemales) {
-            boids[i].isFemale = true;
-        } else {
-            boids[i].isFemale = false;
-        }
+        boids[i].isFemale = (rand() % 2 == 0); 
+
+        // Poids des règles de comportement (distribution normale)
+        boids[i].alignmentWeight = randomNormal(0.75f, 0.1f);
+        boids[i].cohesionWeight = randomNormal(0.75f, 0.1f);
+        boids[i].separationWeight = randomNormal(0.75f, 0.1f);
+
+        // Rayon de la zone d'interaction (distribution uniforme)
+        boids[i].interactionRadius = random(1.0f, 2.0f);
+
+        // État initial de la chaîne de Markov
+        boids[i].markovState = 0;
     }
 
     // Load the OBJ model
@@ -283,18 +344,23 @@ int main() {
         return -1;
     }
 
-    // Create VAO and VBO for boid sphere
-    Sphere boidSphere(boidSize, 16, 8);
-    GLuint boidVBO, boidVAO;
-    glGenBuffers(1, &boidVBO);
-    glGenVertexArrays(1, &boidVAO);
+    // Create surveyor
+    Surveyor surveyor;
+    surveyor.position = glm::vec3{1.0f, -3.0f, 0.0f};
+    surveyor.speed = 0.5f;
 
-    glBindVertexArray(boidVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, boidVBO);
-    glBufferData(GL_ARRAY_BUFFER, boidSphere.getVertexCount() * sizeof(ShapeVertex),
-                boidSphere.getDataPointer(), GL_STATIC_DRAW);
+    // Create dome
+    Sphere dome(domeRadius, 32, 16);
+    GLuint domeVBO, domeVAO;
+    glGenBuffers(1, &domeVBO);
+    glGenVertexArrays(1, &domeVAO);
 
-    // Specify attribute pointers for boid sphere
+    glBindVertexArray(domeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, domeVBO);
+    glBufferData(GL_ARRAY_BUFFER, dome.getVertexCount() * sizeof(ShapeVertex),
+                dome.getDataPointer(), GL_STATIC_DRAW);
+
+    // Specify attribute pointers for dome
     glEnableVertexAttribArray(VERTEX_ATTR_POSITION);
     glVertexAttribPointer(VERTEX_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE,
                         sizeof(ShapeVertex),
@@ -311,13 +377,8 @@ int main() {
     // Unbind VAO
     glBindVertexArray(0);
 
-    // Create surveyor
-    Surveyor surveyor;
-    surveyor.position = glm::vec3{1.0f, -3.0f, 0.0f};
-    surveyor.speed = 0.5f;
-
     // Boucle de mise à jour des boids
-ctx.update = [&]() {
+    ctx.update = [&]() {
     glm::vec3 backgroundColor = dayMode ? glm::vec3{0.06, 0.03, 0.5} : glm::vec3{0.0, 0.0, 0.1}; 
     backgroundColor = glm::mix(backgroundColor, glm::vec3{0.8, 0.9, 1.0}, transition); 
     ctx.background(p6::Color{backgroundColor.r, backgroundColor.g, backgroundColor.b}); 
@@ -366,7 +427,24 @@ ctx.update = [&]() {
     ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f); 
 
     ImGui::End();
-    
+
+    // Bind dome VAO
+    glBindVertexArray(domeVAO);
+
+    // Render dome
+    glm::mat4 domeModelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(domeRadius));
+    shader.set("uModelMatrix", domeModelMatrix);
+
+    // Set dome color
+    glm::vec3 domeColor = glm::vec3(1.0f, 0.0f, 0.0f); // Gray color for dome
+    shader.set("uColor", domeColor);
+
+    // Draw dome
+    glDrawArrays(GL_TRIANGLES, 0, dome.getVertexCount());
+
+    // Unbind VAO
+    glBindVertexArray(0);
+
     // Rotation angle in degrees
     float surveyorRotationAngleY = 100.0f;
 
@@ -406,7 +484,7 @@ ctx.update = [&]() {
             glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * totalRotationMatrix * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
             
             shader.set("uModelMatrix", glm::mat4(1.0f));
-            glm::vec3 boidColor = getBoidColor(dayMode, boids[i].isFemale);
+            glm::vec3 boidColor = getBoidColor(boids[i].markovState, boids[i].isFemale);
             shader.set("uColor", boidColor);
             shader.set("uMVPMatrix", ProjMatrix * MVMatrix * boidModelMatrix);
             shader.set("uMVMatrix", MVMatrix * boidModelMatrix);
@@ -415,27 +493,36 @@ ctx.update = [&]() {
             glBindVertexArray(ghostModel.vao);
             glDrawElements(GL_TRIANGLES, ghostModel.numVertices, GL_UNSIGNED_INT, 0);
         }
+        // Mise à jour de l'état de la chaîne de Markov en fonction du nombre de voisins
+        updateMarkovState(boids[i], boids, numBoids);
     }
     // Update number of boids
         if (numBoids > boids.size()) {
-            int numFemalesToAdd = numBoids * 0.2 - (boids.size() - numFemales);
-            for (int i = 0; i < numFemalesToAdd; ++i) {
+            for (int i = 0; i < numBoids; ++i){
                 Boid boid;
-                boid.position = glm::vec3(glm::linearRand(-1.5f, 1.5f),
-                                            glm::linearRand(-1.5f, 1.5f),
-                                            glm::linearRand(-1.5f, 1.5f));
+                // Position aléatoire des boids dans la sphère
+                float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
+                float phi = random(0.0f, static_cast<float>(M_PI));
+                float r = boidSize * cbrt(random(0.0f, 1.0f));
+                float x = r * sin(phi) * cos(theta);
+                float y = r * sin(phi) * sin(theta);
+                float z = r * cos(phi);
+                boid.position = glm::vec3(x, y, z);
+
+                // Vitesse aléatoire des boids dans une certaine plage
                 boid.velocity = glm::sphericalRand(speedBoids);
-                boid.isFemale = true;
-                boids.push_back(boid);
-            }
-            int numMalesToAdd = numBoids - numFemales - numFemalesToAdd;
-            for (int i = 0; i < numMalesToAdd; ++i) {
-                Boid boid;
-                boid.position = glm::vec3(glm::linearRand(-1.5f, 1.5f),
-                                            glm::linearRand(-1.5f, 1.5f),
-                                            glm::linearRand(-1.5f, 1.5f));
-                boid.velocity = glm::sphericalRand(speedBoids);
-                boid.isFemale = false;
+                
+                // Définir aléatoirement si le boid est une femelle
+                boid.isFemale = (rand() % 2 == 0); 
+
+                // Poids des règles de comportement (distribution normale)
+                boid.alignmentWeight = randomNormal(0.75f, 0.1f);
+                boid.cohesionWeight = randomNormal(0.75f, 0.1f);
+                boid.separationWeight = randomNormal(0.75f, 0.1f);
+
+                // Rayon de la zone d'interaction (distribution uniforme)
+                boid.interactionRadius = random(0.1f, 0.5f);
+
                 boids.push_back(boid);
             }
         } else if (numBoids < boids.size()) {
@@ -490,11 +577,11 @@ ctx.update = [&]() {
             }
 
             // Normaliser la vitesse
-    // Calculate direction to avoid the surveyor
-    glm::vec3 directionFromSurveyor = glm::normalize(boids[i].position - surveyor.position);
+            // Calculate direction to avoid the surveyor
+            glm::vec3 directionFromSurveyor = glm::normalize(boids[i].position - surveyor.position);
 
-    // Adjust boid velocity to move away from the surveyor
-    boids[i].velocity += directionFromSurveyor * avoidanceWeight * ctx.delta_time();
+            // Adjust boid velocity to move away from the surveyor
+            boids[i].velocity += directionFromSurveyor * avoidanceWeight * ctx.delta_time();
 
             // Appliquer simple intégration d'Euler pour mettre à jour la position du boid
             boids[i].position += boids[i].velocity * deltaTime;
@@ -502,15 +589,15 @@ ctx.update = [&]() {
             // Keep boids within the dome bounds
             float distanceToCenter = glm::length(boids[i].position);
             if (distanceToCenter > domeRadius) {
-        // Move the boid back inside the dome
-        boids[i].position = glm::normalize(boids[i].position) * domeRadius;
+                // Move the boid back inside the dome
+                boids[i].position = glm::normalize(boids[i].position) * domeRadius;
             }   
 
             // Calculate boid's model matrix
             glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
 
             // Get the color of the current boid based on day/night mode and boid type
-            glm::vec3 boidColor = getBoidColor(dayMode, boids[i].isFemale);
+            glm::vec3 boidColor = getBoidColor(boids[i].markovState, boids[i].isFemale);
 
             // Send the color of the current boid to the shader
             shader.set("uColor", boidColor);
@@ -521,9 +608,6 @@ ctx.update = [&]() {
             shader.set("uNormalMatrix", glm::transpose(
                                 glm::inverse(MVMatrix * boidModelMatrix)));
 
-            // Bind VAO and draw boid sphere
-            glBindVertexArray(boidVAO);
-            glDrawArrays(GL_TRIANGLES, 0, boidSphere.getVertexCount());
         }
         if (dayMode && transition < 1.0f) {
             transition += 0.01f;
@@ -536,8 +620,8 @@ ctx.update = [&]() {
     ctx.start();
 
     // Clean up
-    glDeleteBuffers(1, &boidVBO);
-    glDeleteVertexArrays(1, &boidVAO);
+    glDeleteBuffers(1, &domeVBO);
+    glDeleteVertexArrays(1, &domeVAO);
 
     return EXIT_SUCCESS;
 }
