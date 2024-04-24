@@ -51,14 +51,20 @@ struct Boid {
 struct Model {
     GLuint vao; // Vertex Array Object
     GLuint vbo; // Vertex Buffer Object
+    GLuint ebo; // Element Buffer Object
     GLuint vboNormals; // Vertex Buffer Object for normals
     GLuint vboTexCoords; // Vertex Buffer Object for texture coordinates
     int numVertices; // Number of vertices
     std::map<std::string, GLuint> materialTextureIDs; // Texture IDs per material
+    std::vector<glm::vec3> vertices; // Added member for storing vertices
+    std::vector<glm::vec3> normals;
+    std::vector<glm::vec2> texCoords;
+    std::vector<unsigned int> indices;
 };
 
 struct Surveyor {
     glm::vec3 position;
+    float rotationAngle;
     float speed;
 };
 
@@ -80,6 +86,7 @@ float cohesionWeight = 0.1f;
 // Facteurs pour la règle d'évitement de la caméra
 float distanceMinToCamera = 0.2f;
 float avoidanceWeight = 0.2f;
+float distanceToSurveyor = 5.0f;
 
 // Rayon du dôme
 float domeRadius = 2.0f;
@@ -112,7 +119,7 @@ void updateMarkovState(Boid& boid, const std::vector<Boid>& boids, int numBoids)
 glm::vec3 getBoidColor(bool markovState, bool isFemale) {
     if (markovState) {
         // Couleur des boids pendant le jour
-        return isFemale ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(1.0f, 1.0f, 1.0f); // Vert pour les femelles, orange pour les autres
+        return isFemale ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(1.0f, 1.0f, 1.0f); // Rouge pour les femelles, blanc pour les autres
     } else {
         // Couleur des boids pendant la nuit
         return glm::vec3(1.0f, 1.0f, 1.0f);
@@ -195,11 +202,6 @@ Model loadModel(const char* objPath, const char* mtlPath) {
         model.materialTextureIDs[material] = textureID;
     }
 
-    std::vector<glm::vec3> vertices;
-    std::vector<glm::vec3> normals;
-    std::vector<glm::vec2> texCoords;
-    std::vector<unsigned int> indices;
-
     std::string line;
     while (std::getline(file, line)) {
         std::istringstream iss(line);
@@ -208,15 +210,15 @@ Model loadModel(const char* objPath, const char* mtlPath) {
         if (type == "v") {
             glm::vec3 vertex;
             iss >> vertex.x >> vertex.y >> vertex.z;
-            vertices.push_back(vertex);
+            model.vertices.push_back(vertex);
         } else if (type == "vn") {
             glm::vec3 normal;
             iss >> normal.x >> normal.y >> normal.z;
-            normals.push_back(normal);
+            model.normals.push_back(normal);
         } else if (type == "vt") {
             glm::vec2 texCoord;
             iss >> texCoord.s >> texCoord.t;
-            texCoords.push_back(texCoord);
+            model.texCoords.push_back(texCoord);
         } else if (type == "f") {
             unsigned int vertexIndex1, vertexIndex2, vertexIndex3;
             unsigned int normalIndex1, normalIndex2, normalIndex3;
@@ -227,13 +229,13 @@ Model loadModel(const char* objPath, const char* mtlPath) {
                 >> vertexIndex3 >> slash >> normalIndex3 >> slash >> texCoordIndex3;
 
             // OBJ indices start from 1, so we need to decrement them to match C++ indexing
-            indices.push_back(vertexIndex1 - 1);
-            indices.push_back(vertexIndex2 - 1);
-            indices.push_back(vertexIndex3 - 1);
+            model.indices.push_back(vertexIndex1 - 1);
+            model.indices.push_back(vertexIndex2 - 1);
+            model.indices.push_back(vertexIndex3 - 1);
         }
     }
 
-    model.numVertices = indices.size();
+    model.numVertices = model.indices.size();
 
     // Generate and bind VAO and VBO
     glGenVertexArrays(1, &model.vao);
@@ -241,7 +243,7 @@ Model loadModel(const char* objPath, const char* mtlPath) {
 
     glBindVertexArray(model.vao);
     glBindBuffer(GL_ARRAY_BUFFER, model.vbo);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(glm::vec3), vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, model.vertices.size() * sizeof(glm::vec3), model.vertices.data(), GL_STATIC_DRAW);
 
     // Set vertex attribute pointers for positions
     glVertexAttribPointer(VERTEX_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0); // Position attribute (aPos)
@@ -251,7 +253,7 @@ Model loadModel(const char* objPath, const char* mtlPath) {
     GLuint vboNormals;
     glGenBuffers(1, &vboNormals);
     glBindBuffer(GL_ARRAY_BUFFER, vboNormals);
-    glBufferData(GL_ARRAY_BUFFER, normals.size() * sizeof(glm::vec3), normals.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, model.normals.size() * sizeof(glm::vec3), model.normals.data(), GL_STATIC_DRAW);
 
     // Set vertex attribute pointers for normals
     glVertexAttribPointer(VERTEX_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0); // Normal attribute (aNormal)
@@ -261,17 +263,16 @@ Model loadModel(const char* objPath, const char* mtlPath) {
     GLuint vboTexCoords;
     glGenBuffers(1, &vboTexCoords);
     glBindBuffer(GL_ARRAY_BUFFER, vboTexCoords);
-    glBufferData(GL_ARRAY_BUFFER, texCoords.size() * sizeof(glm::vec2), texCoords.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, model.texCoords.size() * sizeof(glm::vec2), model.texCoords.data(), GL_STATIC_DRAW);
 
     // Set vertex attribute pointers for texture coordinates
     glVertexAttribPointer(VERTEX_ATTR_TEXCOORDS, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), (void*)0); // Texture coordinates attribute (aTexCoord)
     glEnableVertexAttribArray(VERTEX_ATTR_TEXCOORDS);
 
     // Generate and bind EBO (Element Buffer Object)
-    GLuint ebo;
-    glGenBuffers(1, &ebo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+    glGenBuffers(1, &model.ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, model.indices.size() * sizeof(unsigned int), model.indices.data(), GL_STATIC_DRAW);
 
     // Unbind VAO
     glBindVertexArray(0);
@@ -279,6 +280,32 @@ Model loadModel(const char* objPath, const char* mtlPath) {
     return model;
 }
 
+void changeModelDetail(Model& model, int targetNumVertices) {
+    // Obtenez le nombre actuel de sommets du modèle
+    int currentNumVertices = model.numVertices;
+
+    // Si le nombre de sommets actuel est inférieur ou égal à la cible,
+    // il n'est pas nécessaire de simplifier le maillage
+    if (currentNumVertices <= targetNumVertices) {
+        return;
+    }
+
+    // Calculez le ratio de simplification
+    float simplificationRatio = static_cast<float>(targetNumVertices) / static_cast<float>(currentNumVertices);
+
+    // Appliquez la simplification en réduisant le nombre de sommets
+    int newNumVertices = static_cast<int>(currentNumVertices * simplificationRatio);
+
+    // Réduisez le nombre de sommets en supprimant les derniers sommets excédentaires
+    model.vertices.resize(newNumVertices);
+
+    // Mettez à jour les données du VBO avec les nouveaux sommets
+    glBindBuffer(GL_ARRAY_BUFFER, model.vbo);
+    glBufferData(GL_ARRAY_BUFFER, model.vertices.size() * sizeof(glm::vec3), model.vertices.data(), GL_STATIC_DRAW);
+
+    // Mettez à jour le nombre de sommets du modèle
+    model.numVertices = newNumVertices;
+}
 
 int main() {
     auto ctx = p6::Context{{1280, 720, "fireflies around bignones"}};
@@ -293,6 +320,7 @@ int main() {
 
     // Variables de la caméra
     glm::vec3 cameraPosition = glm::vec3(0.0f, 0.0f, 6.0f);
+    glm::vec3 cameraDirection = glm::vec3(0.0f, 0.0f, -1.0f); // Direction de la caméra
     float cameraSpeed = 1.5f;
 
     // Declare variables for ImGui sliders
@@ -304,13 +332,15 @@ int main() {
     std::vector<Boid> boids(numBoids);
     for (int i = 0; i < numBoids; ++i) {
         // Position aléatoire des boids dans la sphère
-        float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
-        float phi = random(0.0f, static_cast<float>(M_PI));
-        float r = boidSize * cbrt(random(0.0f, 1.0f));
-        float x = r * sin(phi) * cos(theta);
-        float y = r * sin(phi) * sin(theta);
-        float z = r * cos(phi);
-        boids[i].position = glm::vec3(x, y, z);
+        do {
+            float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
+            float phi = random(0.0f, static_cast<float>(M_PI));
+            float r = boidSize * cbrt(random(0.0f, 1.0f));
+            float x = r * sin(phi) * cos(theta);
+            float y = r * sin(phi) * sin(theta);
+            float z = r * cos(phi);
+            boids[i].position = glm::vec3(x, y, z);
+        } while(glm::length(boids[i].position) > domeRadius);
 
         // Vitesse aléatoire des boids dans une certaine plage
         boids[i].velocity = glm::sphericalRand(speedBoids);
@@ -331,14 +361,14 @@ int main() {
     }
 
     // Load the OBJ model
-    Model ghostModel = loadModel("assets/models/projet-sara-creation-3d-only-ghost-3.obj","assets/models/projet-sara-creation-3d-only-ghost-3.mtl");
+    Model ghostModel = loadModel("assets/models/pacman_ghost.obj","assets/models/pacman_ghost.mtl");
     if (ghostModel.numVertices == 0) {
         std::cerr << "Failed to load model" << std::endl;
         return -1;
     }
 
     // Load the OBJ model
-    Model surveyorModel = loadModel("assets/models/projet-sara-creation-3d-only-box-1.obj","assets/models/projet-sara-creation-3d-only-box-1.mtl");
+    Model surveyorModel = loadModel("assets/models/pacman_ghost_cube_v4.obj","assets/models/pacman_ghost_cube_v4.mtl");
     if (surveyorModel.numVertices == 0) {
         std::cerr << "Failed to load model" << std::endl;
         return -1;
@@ -347,7 +377,9 @@ int main() {
     // Create surveyor
     Surveyor surveyor;
     surveyor.position = glm::vec3{1.0f, -3.0f, 0.0f};
-    surveyor.speed = 0.5f;
+    surveyor.rotationAngle = 0.0f;
+    surveyor.speed = 2.5f;
+    int targetNumVertices = surveyorModel.numVertices;
 
     // Create dome
     Sphere dome(domeRadius, 32, 16);
@@ -355,38 +387,15 @@ int main() {
     glGenBuffers(1, &domeVBO);
     glGenVertexArrays(1, &domeVAO);
 
-    glBindVertexArray(domeVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, domeVBO);
-    glBufferData(GL_ARRAY_BUFFER, dome.getVertexCount() * sizeof(ShapeVertex),
-                dome.getDataPointer(), GL_STATIC_DRAW);
-
-    // Specify attribute pointers for dome
-    glEnableVertexAttribArray(VERTEX_ATTR_POSITION);
-    glVertexAttribPointer(VERTEX_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE,
-                        sizeof(ShapeVertex),
-                        (const GLvoid *)offsetof(ShapeVertex, position));
-    glEnableVertexAttribArray(VERTEX_ATTR_NORMAL);
-    glVertexAttribPointer(VERTEX_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE,
-                        sizeof(ShapeVertex),
-                        (const GLvoid *)offsetof(ShapeVertex, normal));
-    glEnableVertexAttribArray(VERTEX_ATTR_TEXCOORDS);
-    glVertexAttribPointer(VERTEX_ATTR_TEXCOORDS, 2, GL_FLOAT, GL_FALSE,
-                        sizeof(ShapeVertex),
-                        (const GLvoid *)offsetof(ShapeVertex, texCoords));
-
-    // Unbind VAO
-    glBindVertexArray(0);
-
     // Boucle de mise à jour des boids
     ctx.update = [&]() {
-    glm::vec3 backgroundColor = dayMode ? glm::vec3{0.06, 0.03, 0.5} : glm::vec3{0.0, 0.0, 0.1}; 
-    backgroundColor = glm::mix(backgroundColor, glm::vec3{0.8, 0.9, 1.0}, transition); 
-    ctx.background(p6::Color{backgroundColor.r, backgroundColor.g, backgroundColor.b}); 
+        glm::vec3 backgroundColor = dayMode ? glm::vec3{0.06, 0.03, 0.5} : glm::vec3{0.0, 0.0, 0.5}; 
+        backgroundColor = glm::mix(backgroundColor, glm::vec3{0.8, 0.9, 1.0}, transition); 
+        ctx.background(p6::Color{backgroundColor.r, backgroundColor.g, backgroundColor.b}); 
 
-    float currentTime = ctx.time();
-    float deltaTime = ctx.delta_time();
+        float deltaTime = ctx.delta_time();
 
-    // Handle input for moving the surveyor
+        // Handle input for moving the surveyor
         if (ctx.key_is_pressed(GLFW_KEY_LEFT)) {
             surveyor.position.x -= surveyor.speed * ctx.delta_time();
         }
@@ -405,98 +414,130 @@ int main() {
         if (ctx.key_is_pressed(GLFW_KEY_Z)) {
             surveyor.position.z += surveyor.speed * ctx.delta_time();
         }
-
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    glm::mat4 ProjMatrix = glm::perspective(glm::radians(70.f), 1280.f / 720.f, 0.1f, 100.f);
-    glm::mat4 MVMatrix = glm::lookAt(cameraPosition, cameraPosition + glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    glm::mat4 NormalMatrix = glm::transpose(glm::inverse(MVMatrix));
-
-    shader.use(); 
-    shader.set("uMVPMatrix", ProjMatrix * MVMatrix);
-    shader.set("uMVMatrix", MVMatrix);
-    shader.set("uNormalMatrix", NormalMatrix);
-
-    ImGui::Begin("Settings");
-    ImGui::SliderInt("Number of Boids", &numBoids, 1, 100);
-    ImGui::SliderFloat("Speed of Boids", &speedBoids, 1.0f, 10.0f);
-    ImGui::SliderFloat("Boid Size", &boidSize, 0.01f, 0.1f);
-    ImGui::Checkbox("Day/Night Mode", &dayMode);
-    ImGui::SliderFloat("Alignment Weight", &alignmentWeight, 0.0f, 1.0f); 
-    ImGui::SliderFloat("Cohesion Weight", &cohesionWeight, 0.0f, 1.0f); 
-    ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f); 
-
-    ImGui::End();
-
-    // Bind dome VAO
-    glBindVertexArray(domeVAO);
-
-    // Render dome
-    glm::mat4 domeModelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(domeRadius));
-    shader.set("uModelMatrix", domeModelMatrix);
-
-    // Set dome color
-    glm::vec3 domeColor = glm::vec3(1.0f, 0.0f, 0.0f); // Gray color for dome
-    shader.set("uColor", domeColor);
-
-    // Draw dome
-    glDrawArrays(GL_TRIANGLES, 0, dome.getVertexCount());
-
-    // Unbind VAO
-    glBindVertexArray(0);
-
-    // Rotation angle in degrees
-    float surveyorRotationAngleY = 100.0f;
-
-    // Convert rotation angle to radians
-    float surveyorRotationAngleYRadians = glm::radians(surveyorRotationAngleY);
-
-    // Apply rotation around the Y axis to the model matrix
-    glm::mat4 surveyorModelMatrix = glm::rotate(glm::translate(glm::mat4(1.0f), surveyor.position), surveyorRotationAngleYRadians, glm::vec3(0.0f, 1.0f, 0.0f));
-
-    // Render surveyor
-    //glm::mat4 surveyorModelMatrix = glm::translate(glm::mat4(1.0f), surveyor.position);
-    shader.set("uModelMatrix", surveyorModelMatrix);
-    glm::vec3 surveyorColor = glm::vec3(1.0f, 1.0f, 1.0f); // White color for surveyor
-    shader.set("uColor", surveyorColor);
-    glBindVertexArray(surveyorModel.vao);
-    glDrawElements(GL_TRIANGLES, surveyorModel.numVertices, GL_UNSIGNED_INT, 0);
-
-    for (int i = 0; i < numBoids; ++i) {
-        // Vérifier si c'est la nuit pour dessiner les fantômes
-        if (!dayMode) {
-            // Rotation autour de l'axe x
-            float angleDegreesX = -45.0f;
-            float angleRadiansX = glm::radians(angleDegreesX);
-            glm::quat rotationQuatX = glm::angleAxis(angleRadiansX, glm::vec3(1.0f, 0.0f, 0.0f));
-            glm::mat4 rotationMatrixX = glm::mat4_cast(rotationQuatX);
-
-            // Rotation autour de l'axe y
-            float angleDegreesY = -75.0f;
-            float angleRadiansY = glm::radians(angleDegreesY);
-            glm::quat rotationQuatY = glm::angleAxis(angleRadiansY, glm::vec3(0.0f, 1.0f, 0.0f));
-            glm::mat4 rotationMatrixY = glm::mat4_cast(rotationQuatY);
-
-            // Concaténation des deux rotations
-            glm::mat4 totalRotationMatrix = rotationMatrixX * rotationMatrixY;
-
-            // Appliquer la rotation à la matrice du modèle
-            glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * totalRotationMatrix * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
-            
-            shader.set("uModelMatrix", glm::mat4(1.0f));
-            glm::vec3 boidColor = getBoidColor(boids[i].markovState, boids[i].isFemale);
-            shader.set("uColor", boidColor);
-            shader.set("uMVPMatrix", ProjMatrix * MVMatrix * boidModelMatrix);
-            shader.set("uMVMatrix", MVMatrix * boidModelMatrix);
-            shader.set("uNormalMatrix", glm::transpose(glm::inverse(MVMatrix * boidModelMatrix)));
-
-            glBindVertexArray(ghostModel.vao);
-            glDrawElements(GL_TRIANGLES, ghostModel.numVertices, GL_UNSIGNED_INT, 0);
+        // Handle rotation of surveyor (and camera) only when space key and arrow keys are pressed simultaneously
+        if (ctx.key_is_pressed(GLFW_KEY_SPACE) && (ctx.key_is_pressed(GLFW_KEY_LEFT) || ctx.key_is_pressed(GLFW_KEY_RIGHT))) {
+            float rotationSpeed = 100.0f; // Adjust as needed
+            if (ctx.key_is_pressed(GLFW_KEY_RIGHT)) {
+                // Rotate left
+                surveyor.rotationAngle -= rotationSpeed * ctx.delta_time();
+            }
+            if (ctx.key_is_pressed(GLFW_KEY_LEFT)) {
+                // Rotate right
+                surveyor.rotationAngle += rotationSpeed * ctx.delta_time();
+            }
         }
-        // Mise à jour de l'état de la chaîne de Markov en fonction du nombre de voisins
-        updateMarkovState(boids[i], boids, numBoids);
-    }
-    // Update number of boids
+        // Convert rotation angle to radians
+        float surveyorRotationAngleYRadians = glm::radians(surveyor.rotationAngle);
+
+        // Apply rotation around the Y axis to the model matrix
+        glm::mat4 surveyorModelMatrix = glm::translate(glm::mat4(1.0f), surveyor.position) * glm::rotate(glm::mat4(1.0f), surveyorRotationAngleYRadians, glm::vec3(0.0f, 1.0f, 0.0f));
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        
+        // Mettre à jour la position de la caméra pour qu'elle suive l'arpenteur
+        cameraPosition = surveyor.position + glm::vec3(0.0f, 2.5f, distanceToSurveyor); // Décalage en Z
+
+        glm::mat4 ProjMatrix = glm::perspective(glm::radians(70.f), 1280.f / 720.f, 0.1f, 100.f);
+        // Recalculer la matrice de vue en fonction de la nouvelle position et de la direction de la caméra
+        glm::mat4 MVMatrix = glm::lookAt(cameraPosition, cameraPosition + cameraDirection, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 NormalMatrix = glm::transpose(glm::inverse(MVMatrix));
+
+        shader.use();
+        shader.set("uMVPMatrix", ProjMatrix * MVMatrix);
+        shader.set("uMVMatrix", MVMatrix);
+        shader.set("uNormalMatrix", NormalMatrix);
+
+        ImGui::Begin("Settings");
+        ImGui::SliderInt("Number of Boids", &numBoids, 1, 100);
+        ImGui::SliderFloat("Speed of Boids", &speedBoids, 1.0f, 10.0f);
+        ImGui::SliderFloat("Boid Size", &boidSize, 0.01f, 0.1f);
+        ImGui::Checkbox("Day/Night Mode", &dayMode);
+        ImGui::SliderFloat("Alignment Weight", &alignmentWeight, 0.0f, 1.0f); 
+        ImGui::SliderFloat("Cohesion Weight", &cohesionWeight, 0.0f, 1.0f); 
+        ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f);
+        ImGui::InputInt("Target Num Vertices", &targetNumVertices);
+        ImGui::End();
+
+        // Change model detail based on target number of vertices
+        changeModelDetail(surveyorModel, targetNumVertices); // Change detail level of surveyor model
+
+        // Bind dome VAO
+        glBindVertexArray(domeVAO);
+        
+        glBindBuffer(GL_ARRAY_BUFFER, domeVBO);
+        glBufferData(GL_ARRAY_BUFFER, dome.getVertexCount() * sizeof(ShapeVertex),
+                    dome.getDataPointer(), GL_STATIC_DRAW);
+
+        // Specify attribute pointers for dome
+        glEnableVertexAttribArray(VERTEX_ATTR_POSITION);
+        glVertexAttribPointer(VERTEX_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE,
+                            sizeof(ShapeVertex),
+                            (const GLvoid *)offsetof(ShapeVertex, position));
+        glEnableVertexAttribArray(VERTEX_ATTR_NORMAL);
+        glVertexAttribPointer(VERTEX_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE,
+                            sizeof(ShapeVertex),
+                            (const GLvoid *)offsetof(ShapeVertex, normal));
+        glEnableVertexAttribArray(VERTEX_ATTR_TEXCOORDS);
+        glVertexAttribPointer(VERTEX_ATTR_TEXCOORDS, 2, GL_FLOAT, GL_FALSE,
+                            sizeof(ShapeVertex),
+                            (const GLvoid *)offsetof(ShapeVertex, texCoords));
+
+        // Render dome
+        glm::mat4 domeModelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(domeRadius));
+        shader.set("uModelMatrix", domeModelMatrix);
+
+        // Activer le mélange pour permettre la transparence
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Définir la couleur du dome avec une composante alpha
+        glm::vec4 domeColorWithAlpha = glm::vec4(0.0f, 0.0f, 1.0f, 0.5f); // Rouge avec une transparence de 0.5
+        // Passer la couleur du dome avec alpha au shader
+        shader.set("uDomeColor", domeColorWithAlpha);
+        // Draw dome
+        glDrawArrays(GL_TRIANGLES, 0, dome.getVertexCount());
+
+        // Désactiver le mélange une fois que vous avez fini de rendre des objets transparents
+        glDisable(GL_BLEND);
+
+        // Unbind VAO
+        glBindVertexArray(0);
+
+        // Bind dome VAO
+        glBindVertexArray(domeVAO);
+
+        // Render surveyor
+        shader.use();
+        shader.set("surveyorPosition", surveyor.position);
+        shader.set("uModelMatrix", surveyorModelMatrix);
+        glm::vec3 surveyorColor = glm::vec3(1.0f, 1.0f, 0.0f); // Yellow color for surveyor
+        shader.set("uColor", surveyorColor);
+        glBindVertexArray(surveyorModel.vao);
+        glDrawElements(GL_TRIANGLES, surveyorModel.numVertices, GL_UNSIGNED_INT, 0);
+        
+        for (int i = 0; i < numBoids; ++i) {
+            // Vérifier si c'est la nuit pour dessiner les fantômes
+            if (!dayMode) {
+
+                // Appliquer la rotation à la matrice du modèle
+                glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
+                
+                shader.set("uModelMatrix", glm::mat4(1.0f));
+                glm::vec3 boidColor = getBoidColor(boids[i].markovState, boids[i].isFemale);
+                shader.set("uColor", boidColor);
+                shader.set("boidPosition", boids[i].position);
+                shader.set("uMVPMatrix", ProjMatrix * MVMatrix * boidModelMatrix);
+                shader.set("uMVMatrix", MVMatrix * boidModelMatrix);
+                shader.set("uNormalMatrix", glm::transpose(glm::inverse(MVMatrix * boidModelMatrix)));
+
+                glBindVertexArray(ghostModel.vao);
+                glDrawElements(GL_TRIANGLES, ghostModel.numVertices, GL_UNSIGNED_INT, 0);
+            }
+            // Mise à jour de l'état de la chaîne de Markov en fonction du nombre de voisins
+            updateMarkovState(boids[i], boids, numBoids);
+        }
+
+        // Update number of boids
         if (numBoids > boids.size()) {
             for (int i = 0; i < numBoids; ++i){
                 Boid boid;
@@ -589,10 +630,12 @@ int main() {
             // Keep boids within the dome bounds
             float distanceToCenter = glm::length(boids[i].position);
             if (distanceToCenter > domeRadius) {
-                // Move the boid back inside the dome
-                boids[i].position = glm::normalize(boids[i].position) * domeRadius;
-            }   
+    // Calculer le vecteur normalisé pointant vers le centre de la sphère
+    glm::vec3 toCenter = -glm::normalize(boids[i].position);
 
+    // Inverser la composante de vitesse selon le vecteur vers le centre de la sphère
+    boids[i].velocity = glm::reflect(boids[i].velocity, toCenter);
+            }   
             // Calculate boid's model matrix
             glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
 
@@ -609,6 +652,8 @@ int main() {
                                 glm::inverse(MVMatrix * boidModelMatrix)));
 
         }
+        // Dessiner la sphère
+    
         if (dayMode && transition < 1.0f) {
             transition += 0.01f;
         } else if (!dayMode && transition > 0.0f) {
@@ -616,12 +661,26 @@ int main() {
         }
     };
 
+
     // Should be done last. It starts the infinite loop.
     ctx.start();
 
     // Clean up
     glDeleteBuffers(1, &domeVBO);
     glDeleteVertexArrays(1, &domeVAO);
+
+    // Libération des VAO et VBO après utilisation
+    glDeleteVertexArrays(1, &surveyorModel.vao);
+    glDeleteBuffers(1, &surveyorModel.vbo);
+    glDeleteBuffers(1, &surveyorModel.ebo);
+
+    // Libération des VAO et VBO après utilisation
+    glDeleteVertexArrays(1, &ghostModel.vao);
+    glDeleteBuffers(1, &ghostModel.vbo);
+    glDeleteBuffers(1, &ghostModel.ebo);
+
+    // Désactiver le test de profondeur
+    glDisable(GL_DEPTH_TEST);
 
     return EXIT_SUCCESS;
 }
