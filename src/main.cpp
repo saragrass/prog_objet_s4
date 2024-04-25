@@ -1,378 +1,3 @@
-#include <cstdlib> // pour std::rand() et std::srand() et autre
-#include <ctime>   // pour std::time()
-#define DOCTEST_CONFIG_IMPLEMENT
-#include "doctest/doctest.h"
-#include "p6/p6.h"
-#include <iostream>
-#include <random>
-#include <filesystem> // pour std::filesystem::path
-#include <stdexcept>
-#include <fstream>
-#include <sstream>
-#include <map>
-#include <cmath>
-#include "imgui.h"
-#include "sphere.h"
-#include "glm/glm.hpp"
-#include "glm/gtc/matrix_transform.hpp"
-#include "glm/gtc/type_ptr.hpp"
-#include <vector>
-
-#define VERTEX_ATTR_POSITION 0
-#define VERTEX_ATTR_NORMAL 1
-#define VERTEX_ATTR_TEXCOORDS 2
-
-float random(float min, float max) {
-    return min + static_cast <float> (rand()) / (static_cast<float>(RAND_MAX + 1) / (max - min));
-}
-
-float randomNormal(float mean, float stddev) {
-    const int numSamples = 12; // Nombre de valeurs aléatoires uniformes à additionner
-    float sum = 0.0f;
-    for (int i = 0; i < numSamples; ++i) {
-        sum += random(0.0f, 1.0f); // Ajouter des valeurs aléatoires uniformément distribuées
-    }
-    return mean + stddev * (sum - numSamples / 2.0f) / (numSamples / 2.0f); // Normalisation
-}
-
-struct Boid {
-    glm::vec3 position;
-    glm::vec3 velocity;
-    bool isFemale;
-    float alignmentWeight;
-    float cohesionWeight;
-    float separationWeight;
-    float interactionRadius;
-    int markovState;
-    glm::vec3 color;
-};
-
-struct Model {
-    GLuint vao; // Vertex Array Object
-    GLuint vbo; // Vertex Buffer Object
-    GLuint ebo; // Element Buffer Object
-    GLuint vboNormals; // Vertex Buffer Object for normals
-    GLuint vboTexCoords; // Vertex Buffer Object for texture coordinates
-    int numVertices; // Number of vertices
-    std::map<std::string, GLuint> materialTextureIDs; // Texture IDs per material
-    std::vector<glm::vec3> vertices; // Added member for storing vertices
-    std::vector<glm::vec3> normals;
-    std::vector<glm::vec2> texCoords;
-    std::vector<unsigned int> indices;
-};
-
-struct Surveyor {
-    glm::vec3 position;
-    float rotationAngle;
-    float speed;
-};
-
-struct TextureInfo {
-    std::string path;
-    float scaleX;
-    float scaleY;
-    float scaleZ;
-};
-
-// Déclaration d'une structure pour stocker chaque frame de l'animation
-struct AnimationFrame {
-    Model model;
-    // Autres données nécessaires pour la frame, comme la position, l'orientation, etc.
-};
-
-float separationDistance = 0.1f; // Distance minimale de séparation des boids
-bool dayMode = true; // Mode jour ou nuit
-float transition = 0.0f; // Valeur de transition pour le fondu
-
-// Facteurs de pondération pour les règles de comportement des boids
-float alignmentWeight = 0.1f;
-float cohesionWeight = 0.1f;
-
-// Facteurs pour la règle d'évitement de la caméra
-float distanceMinToCamera = 0.2f;
-float avoidanceWeight = 0.2f;
-float distanceToSurveyor = 2.0f;
-
-// Rayon du dôme
-float domeRadius = 2.0f;
-
-int countNeighbors(const Boid& boid, const std::vector<Boid>& boids, int numBoids) {
-    int count = 0;
-    for (int i = 0; i < numBoids; ++i) {
-        if (&boid != &boids[i]) {
-            float distance = glm::distance(boid.position, boids[i].position);
-            if (distance < 1.0f) {
-                ++count;
-            }
-        }
-    }
-    return count;
-}
-
-void updateMarkovState(Boid& boid, const std::vector<Boid>& boids, int numBoids) {
-    int neighborCount = countNeighbors(boid, boids, numBoids);
-    
-    // Si le boid a plus de 5 voisins, changer son état de la chaîne de Markov
-    if (neighborCount > 5) {
-        boid.markovState = 1;
-    } else {
-        boid.markovState = 0;
-    }
-}
-
-// Fonction pour obtenir la couleur en fonction du mode jour/nuit et du type de boid
-glm::vec3 getBoidColor(bool markovState, bool isFemale) {
-    if (markovState) {
-        // Couleur des boids pendant le jour
-        return isFemale ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(1.0f, 1.0f, 1.0f); // Rouge pour les femelles, blanc pour les autres
-    } else {
-        // Couleur des boids pendant la nuit
-        return glm::vec3(1.0f, 1.0f, 1.0f);
-    }
-}
-
-Model loadModel(const char* objPath, const char* mtlPath) {
-    Model model;
-
-    // Open the OBJ file
-    std::ifstream file(objPath);
-    if (!file.is_open()) {
-        std::cerr << "Error: Could not open file " << objPath << std::endl;
-        return model;
-    }
-
-    // Open the MTL file
-    std::ifstream mtlFile(mtlPath);
-    if (!mtlFile.is_open()) {
-        std::cerr << "Error: Could not open file " << mtlPath << std::endl;
-        return model;
-    }
-
-    std::map<std::string, std::pair<std::string, glm::vec3>> materialTexturePaths;
-
-    // Process the MTL file
-    std::string lineTexture;
-    std::string currentMaterial;
-    while (std::getline(mtlFile, lineTexture)) {
-        std::istringstream iss(lineTexture);
-        std::string type;
-        iss >> type;
-        if (type == "newmtl") {
-            iss >> currentMaterial;
-        } else if (type == "map_Kd") {
-            std::string texturePath;
-            iss >> texturePath;
-            // Check if there are scaling parameters
-            glm::vec3 scaleParameters(1.0f);
-            if (texturePath == "-s") {
-                iss >> scaleParameters.x >> scaleParameters.y >> scaleParameters.z;
-                // Read the actual texture path
-                iss >> texturePath;
-            }
-            // Adjust texture path to match the directory structure
-            texturePath = "img/" + texturePath;
-            // Store the texture path along with its scaling parameters
-            materialTexturePaths[currentMaterial] = std::make_pair(texturePath, scaleParameters);
-        }
-    }
-
-    // Load textures and associate them with materials
-    for (const auto& [material, textureInfo] : materialTexturePaths) {
-        // Log the texture path before loading
-        std::cout << "Loading texture for material: " << material << ", path: " << textureInfo.first << std::endl;
-
-        // Load texture using p6::load_image or any other method you prefer
-        // For example:
-        p6::Image textureImage = p6::load_image(textureInfo.first.c_str(), true);
-
-        // Concatenate scaling parameters if present
-        std::string scaleParams = std::to_string(textureInfo.second.x) + " " + std::to_string(textureInfo.second.y) + " " + std::to_string(textureInfo.second.z);
-        std::string texturePathWithScale = textureInfo.first + " -s " + scaleParams;
-
-        // Generate OpenGL texture and bind it
-        GLuint textureID;
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-
-        // No need to upload image data explicitly, handled internally by p6::Image
-
-        // Set texture parameters
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        // Associate texture with material
-        // You may need to modify your Model struct to store texture IDs per material
-        model.materialTextureIDs[material] = textureID;
-    }
-
-    std::string line;
-    while (std::getline(file, line)) {
-        std::istringstream iss(line);
-        std::string type;
-        iss >> type;
-        if (type == "v") {
-            glm::vec3 vertex;
-            iss >> vertex.x >> vertex.y >> vertex.z;
-            model.vertices.push_back(vertex);
-        } else if (type == "vn") {
-            glm::vec3 normal;
-            iss >> normal.x >> normal.y >> normal.z;
-            model.normals.push_back(normal);
-        } else if (type == "vt") {
-            glm::vec2 texCoord;
-            iss >> texCoord.s >> texCoord.t;
-            model.texCoords.push_back(texCoord);
-        } else if (type == "f") {
-            unsigned int vertexIndex1, vertexIndex2, vertexIndex3;
-            unsigned int normalIndex1, normalIndex2, normalIndex3;
-            unsigned int texCoordIndex1, texCoordIndex2, texCoordIndex3;
-            char slash;
-            iss >> vertexIndex1 >> slash >> normalIndex1 >> slash >> texCoordIndex1
-                >> vertexIndex2 >> slash >> normalIndex2 >> slash >> texCoordIndex2
-                >> vertexIndex3 >> slash >> normalIndex3 >> slash >> texCoordIndex3;
-
-            // OBJ indices start from 1, so we need to decrement them to match C++ indexing
-            model.indices.push_back(vertexIndex1 - 1);
-            model.indices.push_back(vertexIndex2 - 1);
-            model.indices.push_back(vertexIndex3 - 1);
-        }
-    }
-
-    model.numVertices = model.indices.size();
-
-    // Generate and bind VAO and VBO
-    glGenVertexArrays(1, &model.vao);
-    glGenBuffers(1, &model.vbo);
-
-    glBindVertexArray(model.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, model.vbo);
-    glBufferData(GL_ARRAY_BUFFER, model.vertices.size() * sizeof(glm::vec3), model.vertices.data(), GL_STATIC_DRAW);
-
-    // Set vertex attribute pointers for positions
-    glVertexAttribPointer(VERTEX_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0); // Position attribute (aPos)
-    glEnableVertexAttribArray(VERTEX_ATTR_POSITION);
-
-    // Generate and bind VBO for normals
-    GLuint vboNormals;
-    glGenBuffers(1, &vboNormals);
-    glBindBuffer(GL_ARRAY_BUFFER, vboNormals);
-    glBufferData(GL_ARRAY_BUFFER, model.normals.size() * sizeof(glm::vec3), model.normals.data(), GL_STATIC_DRAW);
-
-    // Set vertex attribute pointers for normals
-    glVertexAttribPointer(VERTEX_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0); // Normal attribute (aNormal)
-    glEnableVertexAttribArray(VERTEX_ATTR_NORMAL);
-
-    // Generate and bind VBO for texture coordinates
-    GLuint vboTexCoords;
-    glGenBuffers(1, &vboTexCoords);
-    glBindBuffer(GL_ARRAY_BUFFER, vboTexCoords);
-    glBufferData(GL_ARRAY_BUFFER, model.texCoords.size() * sizeof(glm::vec2), model.texCoords.data(), GL_STATIC_DRAW);
-
-    // Set vertex attribute pointers for texture coordinates
-    glVertexAttribPointer(VERTEX_ATTR_TEXCOORDS, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), (void*)0); // Texture coordinates attribute (aTexCoord)
-    glEnableVertexAttribArray(VERTEX_ATTR_TEXCOORDS);
-
-    // Generate and bind EBO (Element Buffer Object)
-    glGenBuffers(1, &model.ebo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, model.indices.size() * sizeof(unsigned int), model.indices.data(), GL_STATIC_DRAW);
-
-    // Unbind VAO
-    glBindVertexArray(0);
-
-    return model;
-}
-
-void changeModelDetail(Model& model, int targetNumVertices) {
-    // Obtenez le nombre actuel de sommets du modèle
-    int currentNumVertices = model.numVertices;
-
-    // Si le nombre de sommets actuel est inférieur ou égal à la cible,
-    // il n'est pas nécessaire de simplifier le maillage
-    if (currentNumVertices <= targetNumVertices) {
-        return;
-    }
-
-    // Calculez le ratio de simplification
-    float simplificationRatio = static_cast<float>(targetNumVertices) / static_cast<float>(currentNumVertices);
-
-    // Appliquez la simplification en réduisant le nombre de sommets
-    int newNumVertices = static_cast<int>(currentNumVertices * simplificationRatio);
-
-    // Réduisez le nombre de sommets en supprimant les derniers sommets excédentaires
-    model.vertices.resize(newNumVertices);
-
-    // Mettez à jour les données du VBO avec les nouveaux sommets
-    glBindBuffer(GL_ARRAY_BUFFER, model.vbo);
-    glBufferData(GL_ARRAY_BUFFER, model.vertices.size() * sizeof(glm::vec3), model.vertices.data(), GL_STATIC_DRAW);
-
-    // Mettez à jour le nombre de sommets du modèle
-    model.numVertices = newNumVertices;
-}
-
-glm::vec3 customSphericalRand(float radius) {
-    float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
-    float phi = random(0.0f, static_cast<float>(M_PI));
-
-    float sinPhi = sin(phi);
-
-    float x = radius * sinPhi * cos(theta);
-    float y = radius * sinPhi * sin(theta);
-    float z = radius * cos(phi);
-
-    return glm::vec3(x, y, z);
-}
-
-glm::vec3 randomPointInSphere(float domeRadius) {
-    // Génération d'angles aléatoires dans la plage [0, 2π] et [0, π]
-    float theta = static_cast<float>(M_PI) * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-    float phi = 2.0f * static_cast<float>(M_PI) * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-
-    // Génération d'une distance aléatoire dans la plage [0, domeRadius]
-    float r = domeRadius * cbrt(static_cast<float>(rand()) / static_cast<float>(RAND_MAX));
-
-    // Calcul des coordonnées cartésiennes correspondantes
-    float x = r * sin(theta) * cos(phi);
-    float y = r * sin(theta) * sin(phi);
-    float z = r * cos(theta);
-
-    return glm::vec3(x, y, z);
-}
-
-std::vector<AnimationFrame> animationFrames;
-// Déclarer une variable pour suivre l'indice de la frame actuelle
-int currentFrameIndex = 0;
-
-// Définir une fonction pour animer les frames
-void animateFrames(float deltaTime) {
-    // Incrémenter l'indice de la frame en fonction du temps écoulé
-    currentFrameIndex = (currentFrameIndex + 1) % animationFrames.size();
-
-    // Ton code pour afficher la frame actuelle ici
-    Model currentFrameModel = animationFrames[currentFrameIndex].model;
-    // Afficher la frame dans la scène
-    // Par exemple :
-    glBindVertexArray(currentFrameModel.vao);
-    glDrawElements(GL_TRIANGLES, currentFrameModel.numVertices, GL_UNSIGNED_INT, 0);
-}
-
-// Déclaration d'une variable pour suivre le temps écoulé depuis le début de l'animation
-float elapsedTime = 0.0f;
-
-// Génère un nombre aléatoire dans l'intervalle [min, max]
-float linearRand(float min, float max) {
-    // Calcul de la plage de valeurs
-    float range = max - min;
-
-    // Génération d'un nombre aléatoire dans [0, RAND_MAX]
-    float randomNum = static_cast<float>(std::rand()) / RAND_MAX;
-
-    // Mise à l'échelle et translation du nombre pour qu'il soit dans [min, max]
-    return min + randomNum * range;
-}
-
 int main() {
     auto ctx = p6::Context{{1280, 720, "pacman revenge"}};
     ctx.maximize_window();
@@ -395,18 +20,24 @@ int main() {
 
     // Create boids
     std::vector<Boid> boids(numBoids);
-    for (int i = 0; i < numBoids; ++i) {
-        boids[i].position = glm::vec3(linearRand(-domeRadius, domeRadius),
+    for (auto& boid : boids) {
+        boid.position = glm::vec3(linearRand(-domeRadius, domeRadius),
                                       linearRand(-domeRadius, domeRadius),
                                       linearRand(-domeRadius, domeRadius));
 
-        boids[i].velocity = customSphericalRand(speedBoids);
+        boid.velocity = customSphericalRand(speedBoids);
         
         // Définir aléatoirement si le boid est une femelle
-        boids[i].isFemale = (rand() % 2 == 0);
+        boid.isFemale = (rand() % 2 == 0);
 
         // État initial de la chaîne de Markov
-        boids[i].markovState = 0;
+        boid.markovState = 0;
+        
+        // Initialiser markovTime avec une valeur aléatoire entre 0 et la première transition
+        boid.markovTime = generateStateChangeTime(5);
+
+        // Générer la durée de vie du boid
+        boid.lifespan = generateExp(1);
     }
 
     // Load the OBJ model
@@ -529,9 +160,9 @@ int main() {
 
         ImGui::Begin("Settings");
         ImGui::SliderInt("Number of Boids", &numBoids, 1, 100);
-        ImGui::SliderFloat("Speed of Boids", &speedBoids, 1.0f, 10.0f);
         ImGui::SliderFloat("Boid Size", &boidSize, 0.01f, 1.0f);
         ImGui::Checkbox("Day/Night Mode", &dayMode);
+        ImGui::Checkbox("Day/Night Auto Mode", &autoMode);
         ImGui::SliderFloat("Alignment Weight", &alignmentWeight, 0.0f, 1.0f); 
         ImGui::SliderFloat("Cohesion Weight", &cohesionWeight, 0.0f, 1.0f); 
         ImGui::SliderFloat("Separation Distance", &separationDistance, 0.5f, 4.0f);
@@ -628,17 +259,17 @@ int main() {
         // Change model detail based on target number of vertices
         changeModelDetail(currentFrameModel, targetNumVertices); // Change detail level of surveyor model
         
-        for (int i = 0; i < numBoids; ++i) {
+        for (auto& boid : boids) {
             // Vérifier si c'est la nuit pour dessiner les fantômes
             if (!dayMode) {
 
                 // Appliquer la rotation à la matrice du modèle
-                glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
+                glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boid.position) * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
                 
                 shader.set("uModelMatrix", glm::mat4(1.0f));
-                glm::vec3 boidColor = getBoidColor(boids[i].markovState, boids[i].isFemale);
+                glm::vec3 boidColor = getBoidColor(boid.markovState, boid.isFemale);
                 shader.set("uColor", boidColor);
-                shader.set("boidPosition", boids[i].position);
+                shader.set("boidPosition", boid.position);
                 shader.set("uMVPMatrix", ProjMatrix * MVMatrix * boidModelMatrix);
                 shader.set("uMVMatrix", MVMatrix * boidModelMatrix);
                 shader.set("uNormalMatrix", glm::transpose(glm::inverse(MVMatrix * boidModelMatrix)));
@@ -647,7 +278,20 @@ int main() {
                 glDrawElements(GL_TRIANGLES, ghostModel.numVertices, GL_UNSIGNED_INT, 0);
             }
             // Mise à jour de l'état de la chaîne de Markov en fonction du nombre de voisins
-            updateMarkovState(boids[i], boids, numBoids);
+            updateMarkovState(boid, boids, numBoids);         
+            // Mise à jour de l'état de la chaîne de Markov
+            if (elapsedTime > boid.markovTime) {
+                // Générer un nouveau temps entre les changements d'état
+                boid.markovTime += generateStateChangeTime(1);
+
+                if (autoMode){
+                    // Générer aléatoirement le nouvel état de l'interrupteur
+                    bool newSwitchState = generateSwitchState(1);
+
+                    // Mettre à jour l'état de l'interrupteur
+                    dayMode = newSwitchState;
+                }
+            }
         }
 
         // Update number of boids
@@ -666,6 +310,12 @@ int main() {
 
                 // État initial de la chaîne de Markov
                 boid.markovState = 0;
+                
+                // Générer la durée de vie du boid
+                boid.lifespan = generateExp(5);
+
+                // Initialiser markovTime avec une valeur aléatoire entre 0 et la première transition
+                boid.markovTime = generateStateChangeTime(1);
 
                 boids.push_back(boid);
             }
