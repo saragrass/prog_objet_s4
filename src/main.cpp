@@ -15,7 +15,6 @@
 #include "sphere.h"
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
-#include "glm/gtc/random.hpp" // Pour glm::sphericalRand 
 #include "glm/gtc/type_ptr.hpp"
 #include <vector>
 
@@ -75,6 +74,12 @@ struct TextureInfo {
     float scaleZ;
 };
 
+// Déclaration d'une structure pour stocker chaque frame de l'animation
+struct AnimationFrame {
+    Model model;
+    // Autres données nécessaires pour la frame, comme la position, l'orientation, etc.
+};
+
 float separationDistance = 0.1f; // Distance minimale de séparation des boids
 bool dayMode = true; // Mode jour ou nuit
 float transition = 0.0f; // Valeur de transition pour le fondu
@@ -86,7 +91,7 @@ float cohesionWeight = 0.1f;
 // Facteurs pour la règle d'évitement de la caméra
 float distanceMinToCamera = 0.2f;
 float avoidanceWeight = 0.2f;
-float distanceToSurveyor = 5.0f;
+float distanceToSurveyor = 2.0f;
 
 // Rayon du dôme
 float domeRadius = 2.0f;
@@ -96,7 +101,7 @@ int countNeighbors(const Boid& boid, const std::vector<Boid>& boids, int numBoid
     for (int i = 0; i < numBoids; ++i) {
         if (&boid != &boids[i]) {
             float distance = glm::distance(boid.position, boids[i].position);
-            if (distance < boid.interactionRadius) {
+            if (distance < 1.0f) {
                 ++count;
             }
         }
@@ -307,8 +312,69 @@ void changeModelDetail(Model& model, int targetNumVertices) {
     model.numVertices = newNumVertices;
 }
 
+glm::vec3 customSphericalRand(float radius) {
+    float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
+    float phi = random(0.0f, static_cast<float>(M_PI));
+
+    float sinPhi = sin(phi);
+
+    float x = radius * sinPhi * cos(theta);
+    float y = radius * sinPhi * sin(theta);
+    float z = radius * cos(phi);
+
+    return glm::vec3(x, y, z);
+}
+
+glm::vec3 randomPointInSphere(float domeRadius) {
+    // Génération d'angles aléatoires dans la plage [0, 2π] et [0, π]
+    float theta = static_cast<float>(M_PI) * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+    float phi = 2.0f * static_cast<float>(M_PI) * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+
+    // Génération d'une distance aléatoire dans la plage [0, domeRadius]
+    float r = domeRadius * cbrt(static_cast<float>(rand()) / static_cast<float>(RAND_MAX));
+
+    // Calcul des coordonnées cartésiennes correspondantes
+    float x = r * sin(theta) * cos(phi);
+    float y = r * sin(theta) * sin(phi);
+    float z = r * cos(theta);
+
+    return glm::vec3(x, y, z);
+}
+
+std::vector<AnimationFrame> animationFrames;
+// Déclarer une variable pour suivre l'indice de la frame actuelle
+int currentFrameIndex = 0;
+
+// Définir une fonction pour animer les frames
+void animateFrames(float deltaTime) {
+    // Incrémenter l'indice de la frame en fonction du temps écoulé
+    currentFrameIndex = (currentFrameIndex + 1) % animationFrames.size();
+
+    // Ton code pour afficher la frame actuelle ici
+    Model currentFrameModel = animationFrames[currentFrameIndex].model;
+    // Afficher la frame dans la scène
+    // Par exemple :
+    glBindVertexArray(currentFrameModel.vao);
+    glDrawElements(GL_TRIANGLES, currentFrameModel.numVertices, GL_UNSIGNED_INT, 0);
+}
+
+// Déclaration d'une variable pour suivre le temps écoulé depuis le début de l'animation
+float elapsedTime = 0.0f;
+
+// Génère un nombre aléatoire dans l'intervalle [min, max]
+float linearRand(float min, float max) {
+    // Calcul de la plage de valeurs
+    float range = max - min;
+
+    // Génération d'un nombre aléatoire dans [0, RAND_MAX]
+    float randomNum = static_cast<float>(std::rand()) / RAND_MAX;
+
+    // Mise à l'échelle et translation du nombre pour qu'il soit dans [min, max]
+    return min + randomNum * range;
+}
+
 int main() {
-    auto ctx = p6::Context{{1280, 720, "fireflies around bignones"}};
+    auto ctx = p6::Context{{1280, 720, "pacman revenge"}};
     ctx.maximize_window();
     std::srand(std::time(nullptr));
 
@@ -321,7 +387,6 @@ int main() {
     // Variables de la caméra
     glm::vec3 cameraPosition = glm::vec3(0.0f, 0.0f, 6.0f);
     glm::vec3 cameraDirection = glm::vec3(0.0f, 0.0f, -1.0f); // Direction de la caméra
-    float cameraSpeed = 1.5f;
 
     // Declare variables for ImGui sliders
     int numBoids = 25;
@@ -331,61 +396,74 @@ int main() {
     // Create boids
     std::vector<Boid> boids(numBoids);
     for (int i = 0; i < numBoids; ++i) {
-        // Position aléatoire des boids dans la sphère
-        do {
-            float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
-            float phi = random(0.0f, static_cast<float>(M_PI));
-            float r = boidSize * cbrt(random(0.0f, 1.0f));
-            float x = r * sin(phi) * cos(theta);
-            float y = r * sin(phi) * sin(theta);
-            float z = r * cos(phi);
-            boids[i].position = glm::vec3(x, y, z);
-        } while(glm::length(boids[i].position) > domeRadius);
+        boids[i].position = glm::vec3(linearRand(-domeRadius, domeRadius),
+                                      linearRand(-domeRadius, domeRadius),
+                                      linearRand(-domeRadius, domeRadius));
 
-        // Vitesse aléatoire des boids dans une certaine plage
-        boids[i].velocity = glm::sphericalRand(speedBoids);
+        boids[i].velocity = customSphericalRand(speedBoids);
         
         // Définir aléatoirement si le boid est une femelle
-        boids[i].isFemale = (rand() % 2 == 0); 
-
-        // Poids des règles de comportement (distribution normale)
-        boids[i].alignmentWeight = randomNormal(0.75f, 0.1f);
-        boids[i].cohesionWeight = randomNormal(0.75f, 0.1f);
-        boids[i].separationWeight = randomNormal(0.75f, 0.1f);
-
-        // Rayon de la zone d'interaction (distribution uniforme)
-        boids[i].interactionRadius = random(1.0f, 2.0f);
+        boids[i].isFemale = (rand() % 2 == 0);
 
         // État initial de la chaîne de Markov
         boids[i].markovState = 0;
     }
 
     // Load the OBJ model
-    Model ghostModel = loadModel("assets/models/pacman_ghost.obj","assets/models/pacman_ghost.mtl");
+    Model ghostModel = loadModel("assets/models/pacman_ghost_cube_v4.obj","assets/models/pacman_ghost_cube_v4.mtl");
     if (ghostModel.numVertices == 0) {
         std::cerr << "Failed to load model" << std::endl;
         return -1;
     }
 
     // Load the OBJ model
-    Model surveyorModel = loadModel("assets/models/pacman_ghost_cube_v4.obj","assets/models/pacman_ghost_cube_v4.mtl");
-    if (surveyorModel.numVertices == 0) {
+    Model switchModel = loadModel("assets/models/seance6_switch.obj","assets/models/seance6_switch.mtl");
+    if (switchModel.numVertices == 0) {
         std::cerr << "Failed to load model" << std::endl;
         return -1;
+    }
+    int numberOfSwitch = 10;
+    std::vector<glm::vec3> switchPos(numberOfSwitch);
+    for (int i = 0; i < numberOfSwitch; ++i) {
+        // Déclarer une variable pour stocker le nombre aléatoire
+        float randomNumberX = linearRand(-domeRadius, domeRadius);
+        float randomNumberY = linearRand(-domeRadius, domeRadius);
+        float randomNumberZ = linearRand(-domeRadius, domeRadius);
+        switchPos[i] = glm::vec3(randomNumberX, randomNumberY, randomNumberZ);
     }
 
     // Create surveyor
     Surveyor surveyor;
-    surveyor.position = glm::vec3{1.0f, -3.0f, 0.0f};
+    surveyor.position = glm::vec3{0.0f, -2.75f, 1.0f};
     surveyor.rotationAngle = 0.0f;
     surveyor.speed = 2.5f;
-    int targetNumVertices = surveyorModel.numVertices;
+    int targetNumVertices = ghostModel.numVertices;
+
+    // Load the OBJ model
+    // Vecteur pour stocker toutes les frames de l'animation
+    // Chargement de chaque frame de l'animation depuis les fichiers OBJ et MTL
+    int numFrames = 20;
+    for (int i = 0; i < numFrames; ++i) {
+        std::string objFilePath = "assets/models/pacman_cube_v3/pacman_cube_v3" + std::to_string(i+1) + ".obj";
+        std::string mtlFilePath = "assets/models/pacman_cube_v3/pacman_cube_v3" + std::to_string(i+1) + ".mtl";
+        // Convertir les std::string en const char *
+        const char *objPath = objFilePath.c_str();
+        const char *mtlPath = mtlFilePath.c_str();
+        Model model = loadModel(objPath, mtlPath);
+        if (model.numVertices == 0) {
+            std::cerr << "Failed to load model" << std::endl;
+            return -1;
+        }
+        // Ajouter la frame chargée au vecteur
+        animationFrames.push_back({model /*, autres données de la frame */});
+    }
 
     // Create dome
     Sphere dome(domeRadius, 32, 16);
     GLuint domeVBO, domeVAO;
     glGenBuffers(1, &domeVBO);
     glGenVertexArrays(1, &domeVAO);
+
 
     // Boucle de mise à jour des boids
     ctx.update = [&]() {
@@ -394,26 +472,30 @@ int main() {
         ctx.background(p6::Color{backgroundColor.r, backgroundColor.g, backgroundColor.b}); 
 
         float deltaTime = ctx.delta_time();
+        
+        // Appeler la fonction d'animation des frames
+        animateFrames(deltaTime);
 
         // Handle input for moving the surveyor
-        if (ctx.key_is_pressed(GLFW_KEY_LEFT)) {
+        if (ctx.key_is_pressed(GLFW_KEY_LEFT) && (-domeRadius < surveyor.position.x)) {
             surveyor.position.x -= surveyor.speed * ctx.delta_time();
         }
-        if (ctx.key_is_pressed(GLFW_KEY_RIGHT)) {
+        if (ctx.key_is_pressed(GLFW_KEY_RIGHT) && (surveyor.position.x < domeRadius)) {
             surveyor.position.x += surveyor.speed * ctx.delta_time();
         }
-        if (ctx.key_is_pressed(GLFW_KEY_UP)) {
+        if (ctx.key_is_pressed(GLFW_KEY_UP) && (surveyor.position.y < domeRadius)) {
             surveyor.position.y += surveyor.speed * ctx.delta_time();
         }
-        if (ctx.key_is_pressed(GLFW_KEY_DOWN)) {
+        if (ctx.key_is_pressed(GLFW_KEY_DOWN) && (-domeRadius < surveyor.position.y)) {
             surveyor.position.y -= surveyor.speed * ctx.delta_time();
         }
-        if (ctx.key_is_pressed(GLFW_KEY_A)) {
+        if (ctx.key_is_pressed(GLFW_KEY_A) && (-domeRadius < surveyor.position.z)) {
             surveyor.position.z -= surveyor.speed * ctx.delta_time();
         }
-        if (ctx.key_is_pressed(GLFW_KEY_Z)) {
+        if (ctx.key_is_pressed(GLFW_KEY_Z) && (surveyor.position.z < domeRadius)) {
             surveyor.position.z += surveyor.speed * ctx.delta_time();
         }
+
         // Handle rotation of surveyor (and camera) only when space key and arrow keys are pressed simultaneously
         if (ctx.key_is_pressed(GLFW_KEY_SPACE) && (ctx.key_is_pressed(GLFW_KEY_LEFT) || ctx.key_is_pressed(GLFW_KEY_RIGHT))) {
             float rotationSpeed = 100.0f; // Adjust as needed
@@ -426,16 +508,14 @@ int main() {
                 surveyor.rotationAngle += rotationSpeed * ctx.delta_time();
             }
         }
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
         // Convert rotation angle to radians
         float surveyorRotationAngleYRadians = glm::radians(surveyor.rotationAngle);
 
-        // Apply rotation around the Y axis to the model matrix
-        glm::mat4 surveyorModelMatrix = glm::translate(glm::mat4(1.0f), surveyor.position) * glm::rotate(glm::mat4(1.0f), surveyorRotationAngleYRadians, glm::vec3(0.0f, 1.0f, 0.0f));
-
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        
         // Mettre à jour la position de la caméra pour qu'elle suive l'arpenteur
-        cameraPosition = surveyor.position + glm::vec3(0.0f, 2.5f, distanceToSurveyor); // Décalage en Z
+        cameraPosition = surveyor.position + glm::vec3(0.0f, 1.0f, distanceToSurveyor); // Décalage en Z
 
         glm::mat4 ProjMatrix = glm::perspective(glm::radians(70.f), 1280.f / 720.f, 0.1f, 100.f);
         // Recalculer la matrice de vue en fonction de la nouvelle position et de la direction de la caméra
@@ -450,16 +530,29 @@ int main() {
         ImGui::Begin("Settings");
         ImGui::SliderInt("Number of Boids", &numBoids, 1, 100);
         ImGui::SliderFloat("Speed of Boids", &speedBoids, 1.0f, 10.0f);
-        ImGui::SliderFloat("Boid Size", &boidSize, 0.01f, 0.1f);
+        ImGui::SliderFloat("Boid Size", &boidSize, 0.01f, 1.0f);
         ImGui::Checkbox("Day/Night Mode", &dayMode);
         ImGui::SliderFloat("Alignment Weight", &alignmentWeight, 0.0f, 1.0f); 
         ImGui::SliderFloat("Cohesion Weight", &cohesionWeight, 0.0f, 1.0f); 
-        ImGui::SliderFloat("Separation Distance", &separationDistance, 0.1f, 2.0f);
-        ImGui::InputInt("Target Num Vertices", &targetNumVertices);
+        ImGui::SliderFloat("Separation Distance", &separationDistance, 0.5f, 4.0f);
+        ImGui::SliderInt("Target Num Vertices", &targetNumVertices, 100, 207004);
         ImGui::End();
 
         // Change model detail based on target number of vertices
-        changeModelDetail(surveyorModel, targetNumVertices); // Change detail level of surveyor model
+        changeModelDetail(ghostModel, targetNumVertices);
+
+        // Render switch model
+        for (int i = 0; i < numberOfSwitch; ++i) {
+            glm::vec3 switchPosition = switchPos[i]; // Position de la switch
+            shader.use();
+            glm::mat4 switchModelMatrix = glm::translate(glm::mat4(1.0f), switchPosition) *
+                                        glm::scale(glm::mat4(1.0f), glm::vec3(0.5f));
+            shader.set("uModelMatrix", switchModelMatrix);
+            glm::vec3 switchColor = glm::vec3(1.0f, 1.0f, 1.0f); // White color for switch
+            shader.set("uColor", switchColor);
+            glBindVertexArray(switchModel.vao);
+            glDrawElements(GL_TRIANGLES, switchModel.numVertices, GL_UNSIGNED_INT, 0);
+        }
 
         // Bind dome VAO
         glBindVertexArray(domeVAO);
@@ -506,14 +599,34 @@ int main() {
         // Bind dome VAO
         glBindVertexArray(domeVAO);
 
+        // Utilise l'indice de frame courant pour sélectionner la frame appropriée à afficher
+        // Incrémente le temps écoulé à chaque itération de la boucle
+        elapsedTime += deltaTime;
+
+        // Durée totale de l'animation (en secondes)
+        float animationDuration = 1.0f; // Par exemple, 2 secondes
+
+        // Calcule l'indice de frame en utilisant le temps écoulé
+        int currentFrameIndex = static_cast<int>(std::fmod(elapsedTime / animationDuration, numFrames));
+
+        Model currentFrameModel = animationFrames[currentFrameIndex].model;
+        
+        // Envoie les matrices au shader
         // Render surveyor
         shader.use();
         shader.set("surveyorPosition", surveyor.position);
-        shader.set("uModelMatrix", surveyorModelMatrix);
+        glm::mat4 modelMatrix = glm::translate(glm::mat4(1.0f), surveyor.position) *
+                            glm::rotate(glm::mat4(1.0f), glm::radians(100.0f), glm::vec3(0.0f, 1.0f, 0.0f)) *
+                            glm::rotate(glm::mat4(1.0f), surveyorRotationAngleYRadians, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(0.5f, 0.5f, 0.5f));
+        shader.set("uModelMatrix", modelMatrix);
         glm::vec3 surveyorColor = glm::vec3(1.0f, 1.0f, 0.0f); // Yellow color for surveyor
         shader.set("uColor", surveyorColor);
-        glBindVertexArray(surveyorModel.vao);
-        glDrawElements(GL_TRIANGLES, surveyorModel.numVertices, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(currentFrameModel.vao);
+        glDrawElements(GL_TRIANGLES, currentFrameModel.numVertices, GL_UNSIGNED_INT, 0);
+        
+        // Change model detail based on target number of vertices
+        changeModelDetail(currentFrameModel, targetNumVertices); // Change detail level of surveyor model
         
         for (int i = 0; i < numBoids; ++i) {
             // Vérifier si c'est la nuit pour dessiner les fantômes
@@ -541,28 +654,18 @@ int main() {
         if (numBoids > boids.size()) {
             for (int i = 0; i < numBoids; ++i){
                 Boid boid;
-                // Position aléatoire des boids dans la sphère
-                float theta = random(0.0f, 2.0f * static_cast<float>(M_PI));
-                float phi = random(0.0f, static_cast<float>(M_PI));
-                float r = boidSize * cbrt(random(0.0f, 1.0f));
-                float x = r * sin(phi) * cos(theta);
-                float y = r * sin(phi) * sin(theta);
-                float z = r * cos(phi);
-                boid.position = glm::vec3(x, y, z);
+                boid.position = glm::vec3(linearRand(-domeRadius, domeRadius),
+                                      linearRand(-domeRadius, domeRadius),
+                                      linearRand(-domeRadius, domeRadius));
 
                 // Vitesse aléatoire des boids dans une certaine plage
-                boid.velocity = glm::sphericalRand(speedBoids);
+                boid.velocity = customSphericalRand(speedBoids);
                 
                 // Définir aléatoirement si le boid est une femelle
-                boid.isFemale = (rand() % 2 == 0); 
+                boid.isFemale = (rand() % 2 == 0);
 
-                // Poids des règles de comportement (distribution normale)
-                boid.alignmentWeight = randomNormal(0.75f, 0.1f);
-                boid.cohesionWeight = randomNormal(0.75f, 0.1f);
-                boid.separationWeight = randomNormal(0.75f, 0.1f);
-
-                // Rayon de la zone d'interaction (distribution uniforme)
-                boid.interactionRadius = random(0.1f, 0.5f);
+                // État initial de la chaîne de Markov
+                boid.markovState = 0;
 
                 boids.push_back(boid);
             }
@@ -630,12 +733,10 @@ int main() {
             // Keep boids within the dome bounds
             float distanceToCenter = glm::length(boids[i].position);
             if (distanceToCenter > domeRadius) {
-    // Calculer le vecteur normalisé pointant vers le centre de la sphère
-    glm::vec3 toCenter = -glm::normalize(boids[i].position);
+                // Move the boid back inside the dome
+                boids[i].position = glm::normalize(boids[i].position) * domeRadius;
+            }
 
-    // Inverser la composante de vitesse selon le vecteur vers le centre de la sphère
-    boids[i].velocity = glm::reflect(boids[i].velocity, toCenter);
-            }   
             // Calculate boid's model matrix
             glm::mat4 boidModelMatrix = glm::translate(glm::mat4(1.0f), boids[i].position) * glm::scale(glm::mat4(1.0f), glm::vec3(boidSize));
 
@@ -652,7 +753,6 @@ int main() {
                                 glm::inverse(MVMatrix * boidModelMatrix)));
 
         }
-        // Dessiner la sphère
     
         if (dayMode && transition < 1.0f) {
             transition += 0.01f;
@@ -660,8 +760,6 @@ int main() {
             transition -= 0.01f;
         }
     };
-
-
     // Should be done last. It starts the infinite loop.
     ctx.start();
 
@@ -670,17 +768,14 @@ int main() {
     glDeleteVertexArrays(1, &domeVAO);
 
     // Libération des VAO et VBO après utilisation
-    glDeleteVertexArrays(1, &surveyorModel.vao);
-    glDeleteBuffers(1, &surveyorModel.vbo);
-    glDeleteBuffers(1, &surveyorModel.ebo);
-
-    // Libération des VAO et VBO après utilisation
     glDeleteVertexArrays(1, &ghostModel.vao);
     glDeleteBuffers(1, &ghostModel.vbo);
     glDeleteBuffers(1, &ghostModel.ebo);
-
-    // Désactiver le test de profondeur
-    glDisable(GL_DEPTH_TEST);
+    
+    // Libération des VAO et VBO après utilisation
+    glDeleteVertexArrays(1, &switchModel.vao);
+    glDeleteBuffers(1, &switchModel.vbo);
+    glDeleteBuffers(1, &switchModel.ebo);
 
     return EXIT_SUCCESS;
 }
