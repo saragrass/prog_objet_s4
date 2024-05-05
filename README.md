@@ -1,3 +1,5 @@
+**<font color="red">Nous avons oublié de l'écrire dans le rapport mais nous avons ajouté une fonctionnalité de durée de vie des boids (boid.lifespan).******
+
 # Simple-p6-Setup
 
 This template contains all the things you need to get started with a clean and modern C++ project (formatter, linter, tests, continuous integration, etc.).
